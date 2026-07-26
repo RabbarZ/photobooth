@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photobooth</title>
+<link rel="stylesheet" href="/static/portal.css">
+</head>
+<body>
+
+<header>
+  <h1>Photobooth</h1>
+  <p class="sub">Tap a photo to save it. {{ photos|length }} photo{{ '' if photos|length == 1 else 's' }} available.</p>
+</header>
+
+{% if zip_file %}
+<section class="bulk">
+  <button id="download-all" data-url="/all-photos.zip">
+    Download all &middot; {{ zip_file.megabytes }} MB
+  </button>
+  <p class="note" id="bulk-note">
+    Large download &mdash; keep this page open if you can. You have
+    {{ grace_minutes }} minutes to finish once it starts.
+  </p>
+</section>
+{% endif %}
+
+{% if photos %}
+<main class="grid">
+  {% for photo in photos %}
+  <a class="tile" href="/photos/{{ photo.name }}" download="{{ photo.name }}">
+    <img src="/thumbs/{{ photo.name }}" alt="{{ photo.name }}" loading="lazy" decoding="async">
+  </a>
+  {% endfor %}
+</main>
+{% else %}
+<main class="empty"><p>No photos yet. Smile for the camera!</p></main>
+{% endif %}
+
+<footer><p>Connected to the photobooth. No internet access here.</p></footer>
+
+<script>
+// Heartbeat: resets the server's idle timer while this page is open. Errors are
+// ignored on purpose -- a failed beat must never break the gallery.
+const BEAT_MS = {{ heartbeat_seconds }} * 1000;
+function beat() {
+  fetch('/api/heartbeat', {method: 'POST', cache: 'no-store'}).catch(() => {});
+}
+setInterval(beat, BEAT_MS);
+// Beat again when the phone wakes and the tab becomes visible, so a returning
+// guest is not sitting on an already-expired idle timer.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) beat();
+});
+
+// Bulk download: ask the server for a grace window *before* navigating, so the
+// transfer survives the page being backgrounded or the screen locking.
+const button = document.getElementById('download-all');
+if (button) {
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    const note = document.getElementById('bulk-note');
+    note.textContent = 'Preparing…';
+    let url = button.dataset.url;
+    try {
+      const res = await fetch('/api/download-all', {method: 'POST', cache: 'no-store'});
+      const data = await res.json();
+      if (data.url) url = data.url;
+    } catch (err) {
+      // Grace registration failed; still let them try the download.
+    }
+    note.textContent = 'Download started. It may take several minutes.';
+    button.disabled = false;
+    window.location = url;
+  });
+}
+</script>
+</body>
+</html>

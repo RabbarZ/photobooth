@@ -1,0 +1,13 @@
+# Rendered by render_configs.py from config.yaml -- edit that, not this.
+# Installed as /etc/NetworkManager/conf.d/99-photobooth-unmanaged.conf
+#
+# NetworkManager owns wlan0 on this image. If it keeps managing the interface
+# it will fight hostapd for it: NM tries to scan and reassociate as a station
+# while hostapd is running an AP on the same radio, and the AP dies seconds
+# after starting. Handing the interface over is mandatory, not tidiness.
+#
+# Removing this file (and reloading NM) gives wlan0 back to NetworkManager,
+# which is exactly what deactivate.sh does to restore normal Wi-Fi.
+
+[keyfile]
+unmanaged-devices=interface-name:@INTERFACE@

@@ -1,0 +1,63 @@
+# Rendered by render_configs.py from config.yaml -- edit that, not this.
+# Installed as /etc/dnsmasq.d/photobooth.conf
+
+# Serve only the AP interface. bind-interfaces (rather than bind-dynamic) keeps
+# dnsmasq off every other interface, so it can never answer on the LAN side.
+interface=@INTERFACE@
+except-interface=lo
+bind-interfaces
+
+# There is no upstream. Do not read resolv.conf and do not try to forward --
+# otherwise every lookup waits for a timeout that will never resolve.
+no-resolv
+no-hosts
+domain-needed
+bogus-priv
+
+# THE captive-portal trick: every name in existence resolves to the Pi, so
+# whatever host a phone reaches for, it lands on the portal.
+address=/#/@ADDRESS@
+
+# Answer AAAA (IPv6) queries with NOERROR and no records, rather than REFUSED.
+#
+# This network is IPv4-only. Without this, dnsmasq REFUSES AAAA lookups, and a
+# REFUSED reply reads to a client as "this resolver is broken" rather than
+# "this name has no IPv6". iOS in particular treats that as an inconclusive
+# probe: it may retry or fall back instead of deciding it is behind a captive
+# portal, which is one reason the login sheet fails to appear on its own.
+# filter-AAAA does NOT work here: it only applies to queries dnsmasq forwards
+# upstream, and ours are all answered locally by the address=/#/ wildcard.
+# The local equivalent is an empty wildcard AAAA record, which yields NOERROR
+# with zero answers -- "this name exists, it has no IPv6" -- so the client
+# falls straight back to IPv4 instead of retrying a seemingly broken resolver.
+# Mapping to a real "::" address would be worse: clients would try to connect
+# to it and stall.
+local=/#/
+
+dhcp-range=@DHCP_START@,@DHCP_END@,@NETMASK@,@DHCP_LEASE@
+dhcp-option=option:router,@ADDRESS@
+dhcp-option=option:dns-server,@ADDRESS@
+
+# RFC 8910 captive-portal URI. This must point at an RFC 8908 JSON API, NOT at
+# a login page: iOS 14+ and Android 11+ query it *instead of* running the old
+# HTTP probe, and expect an application/captive+json document. Pointing it at
+# the HTML portal makes iOS fetch the page, fail to parse a captive status, and
+# never open the sign-in sheet at all -- it looks like detection is broken.
+#
+# The API answers {"captive": true}, which is what actually tells the device
+# it must log in. It does NOT mark the device authenticated, so the OS still
+# shows "login required" and still re-pops the portal on wake -- which is what we
+# want. It makes the portal open more reliably on recent iOS and Android.
+# dhcp-option-force, NOT dhcp-option: a DHCP server only sends options the
+# client listed in its Parameter Request List (option 55). iOS does not always
+# ask for 114, so a plain dhcp-option is silently dropped -- the config looks
+# correct, dnsmasq logs nothing, and the phone never learns the portal URL.
+# -force sends it unconditionally.
+dhcp-option-force=114,"http://@ADDRESS@/captive-api"
+
+dhcp-authoritative
+
+# Short leases keep the table small as guests come and go all evening.
+# Query logging is off on purpose: it is a constant stream of SD-card writes
+# for data nobody reads. Add log-queries temporarily if debugging DNS.
+quiet-dhcp

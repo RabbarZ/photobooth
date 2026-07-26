@@ -1,0 +1,128 @@
+# Rendered by render_configs.py from config.yaml -- edit that, not this.
+# Installed as /etc/nginx/sites-available/photobooth
+
+# Per-device connection cap. Keyed on the client address, so one phone opening
+# many tabs cannot monopolise the radio.
+limit_conn_zone $binary_remote_addr zone=perdev:10m;
+# Global cap. $server_name is constant here, so every request shares one key
+# and this becomes a whole-AP ceiling on concurrent transfers.
+limit_conn_zone $server_name zone=globaldl:1m;
+# Portal request rate per device.
+limit_req_zone $binary_remote_addr zone=portalreq:10m rate=@RATE@r/s;
+
+limit_conn_status 503;
+limit_req_status 429;
+
+# Anything not addressed to the portal host gets bounced to it. This is what
+# answers the OS connectivity probes -- captive.apple.com,
+# connectivitycheck.gstatic.com, www.msftconnecttest.com, detectportal.mozilla.org
+# and friends all resolve to us via dnsmasq and land here.
+#
+# We return a redirect instead of the 204 / "Success" / "Microsoft Connect Test"
+# body each OS is looking for. The device therefore never concludes it has
+# internet, stays in the "login required" state, and re-opens the portal when
+# the phone wakes. That re-entry path is the whole point: a guest who takes a
+# second photo gets the gallery popped up again without doing anything.
+server {
+    listen 80 default_server;
+    server_name _;
+    access_log off;
+
+    # Apple's probe gets a 302 to the portal, which is what essentially every
+    # deployed captive portal does and what iOS handles most reliably.
+    #
+    # An earlier revision returned 200 with the portal body inline here, on the
+    # theory that the CNA mishandles redirects on the probe. Testing with a real
+    # iPhone did not support that: the probe was answered, iOS kept re-probing,
+    # and no sheet appeared either way -- so the 200 bought nothing and diverged
+    # from the well-trodden path. Reverted.
+    #
+    # The response must never contain "Success", or iOS concludes the network
+    # has working internet and stops showing the portal entirely.
+    # Everything else still bounces to the portal. Android and Windows both
+    # handle the redirect correctly and prefer it.
+    #
+    # This MUST be a location block, not a bare server-level `return`: a
+    # server-level return short-circuits location matching entirely, so the
+    # Apple probe above would never be reached.
+    location / {
+        return 302 http://@ADDRESS@/;
+    }
+}
+
+server {
+    listen 80;
+    server_name @ADDRESS@ photobooth photobooth.local;
+
+    root /var/lib/photobooth;
+    access_log off;
+
+    # sendfile keeps large JPEGs and the zip out of user space entirely;
+    # tcp_nopush lets the kernel fill full frames before sending.
+    sendfile on;
+    tcp_nopush on;
+    sendfile_max_chunk 512k;   # one big file cannot starve the other workers
+
+    client_max_body_size 1k;   # nothing here accepts uploads
+    default_type application/octet-stream;
+
+    # ---- static photo files -------------------------------------------------
+    location /photos/ {
+        alias @PHOTO_DIR@/;
+        limit_conn perdev @PER_DEVICE@;
+        limit_conn globaldl @GLOBAL@;
+        expires 1h;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Thumbnails are small and pre-generated on ingest -- never resized on
+    # request. Cached hard, since a given photo's thumbnail never changes.
+    location /thumbs/ {
+        alias @THUMB_DIR@/;
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800, immutable";
+    }
+
+    # ---- the prebuilt full-gallery zip -------------------------------------
+    # A static file built in the background by ingest.py: no CPU, no RAM and no
+    # repeated work when several guests download at once.
+    location = /all-photos.zip {
+        alias @ZIP_PATH@;
+        limit_conn perdev @PER_DEVICE@;
+        limit_conn globaldl @GLOBAL@;
+        add_header Content-Disposition 'attachment; filename="photobooth.zip"';
+        add_header Cache-Control "no-store";
+    }
+
+    location /static/ {
+        alias @APP_DIR@/static/;
+        expires 7d;
+    }
+
+    # ---- RFC 8908 captive status API ---------------------------------------
+    # Queried by iOS/Android via DHCP option 114. Kept out of the rate-limited
+    # location: the OS polls it, and a 429 here reads as a broken portal.
+    location = /captive-api {
+        proxy_pass http://@PORTAL_BIND@/captive-api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        add_header Cache-Control "no-store" always;
+    }
+
+    # ---- the portal app ----------------------------------------------------
+    location / {
+        limit_req zone=portalreq burst=@BURST@ nodelay;
+        proxy_pass http://@PORTAL_BIND@;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        # The app maps this back to a MAC via the dnsmasq leases.
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+        # No add_header here: the Flask app already sets Cache-Control on every
+        # response, and adding a second one produced duplicate headers on the
+        # captive-portal probe -- needless ambiguity on the one response that
+        # has to be interpreted correctly.
+    }
+}

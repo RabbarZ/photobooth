@@ -1,0 +1,19 @@
+[Unit]
+Description=Photobooth AP interface address (wlan0)
+# Everything else in the AP stack depends on this: hostapd needs the interface
+# free of NetworkManager, and dnsmasq cannot bind its DHCP/DNS sockets until
+# the address exists. Ordering alone is not enough -- hostapd and dnsmasq are
+# bound to this unit with BindsTo below so they never run without it.
+Wants=network.target
+After=network.target NetworkManager.service
+Before=hostapd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Idempotent: safe to start when it is already applied.
+ExecStart=/usr/bin/python3 /home/pi/repos/photobooth/gallery/accesspoint.py up
+ExecStop=/usr/bin/python3 /home/pi/repos/photobooth/gallery/accesspoint.py down
+
+[Install]
+WantedBy=multi-user.target

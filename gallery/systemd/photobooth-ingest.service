@@ -1,0 +1,26 @@
+[Unit]
+Description=Photobooth ingest (thumbnails + prebuilt zip)
+After=local-fs.target
+
+[Service]
+Type=exec
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/repos/photobooth/gallery
+ExecStart=/usr/bin/python3 ingest.py
+Restart=always
+RestartSec=5
+# Lowest priority for both CPU and disk. Capturing photos and serving guests
+# both matter more than finishing a rebuild quickly, and this competes with
+# them for the same SD card.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/photobooth
+
+[Install]
+WantedBy=multi-user.target

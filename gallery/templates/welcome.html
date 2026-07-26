@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photobooth</title>
+<!--
+  Served only to iOS's Captive Network Assistant. Everything is inline: no
+  stylesheet, no images, no scripts. The CNA abandons a portal that is slow to
+  load, and the full gallery pulls dozens of thumbnails over a busy 2.4 GHz
+  link -- which is why the login sheet was failing to appear on its own.
+
+  The CNA also cannot save files, so sending guests to Safari is not a
+  workaround, it is where downloading has to happen anyway.
+-->
+<style>
+  body { margin:0; padding:2rem 1.25rem; background:#12131a; color:#f4f4f6;
+         font:16px/1.55 system-ui,-apple-system,sans-serif; text-align:center; }
+  h1 { font-size:1.6rem; margin:0 0 .4rem; }
+  p  { color:#9a9aa8; margin:.4rem 0 1.5rem; }
+  a.button { display:block; max-width:22rem; margin:0 auto;
+             padding:.95rem 1.25rem; border-radius:.6rem;
+             background:#4f8cff; color:#fff; font-weight:600;
+             text-decoration:none; }
+  small { display:block; margin-top:1.25rem; color:#6d6f7e; font-size:.8rem; }
+  @media (prefers-color-scheme: light) {
+    body { background:#f6f7fb; color:#16171d; } p { color:#5c5f70; }
+  }
+</style>
+</head>
+<body>
+  <h1>You're connected</h1>
+  <p>{{ photos }} photo{{ '' if photos == 1 else 's' }} ready to view.</p>
+  <a class="button" href="http://10.42.0.1/">Open the gallery</a>
+  <small>Opens in your browser, where you can save photos.</small>
+</body>
+</html>

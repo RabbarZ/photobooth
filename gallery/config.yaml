@@ -1,0 +1,90 @@
+# Photobooth gallery — single source of truth for every tunable.
+#
+# Read by: portal.py, session_manager.py, rotate_password.py, ingest.py, setup.sh
+# After changing values under `access_point` or `limits`, re-run setup.sh so the
+# rendered hostapd/dnsmasq/nginx files pick them up. Everything else is read at
+# runtime; a `systemctl restart photobooth-*` is enough.
+
+access_point:
+  ssid: Photobooth
+  interface: wlan0
+  # 2.4 GHz only. Use 1, 6 or 11 -- they are the only non-overlapping channels,
+  # and a crowded channel hurts far more than anything else you can tune here.
+  channel: 6
+  country_code: CH
+  # The onboard BCM43438 is a single-antenna 802.11n chip. It degrades badly
+  # past a handful of *active* clients, so keep this low. Raising it does not
+  # give you more throughput, only more contention.
+  max_num_sta: 10
+  address: 10.42.0.1
+  prefix_length: 24
+  dhcp_range_start: 10.42.0.50
+  dhcp_range_end: 10.42.0.150
+  # Short leases keep the table small as guests come and go.
+  dhcp_lease_time: 15m
+
+password:
+  # How often a NEW passphrase is minted and the QR redrawn.
+  rotate_interval_minutes: 30
+
+  # How many passphrases hostapd accepts at once (a rolling key ring).
+  #
+  # With one key, a guest who joins moments before a rotation is stranded: the
+  # passphrase their phone cached is gone, and any reconnect -- power save,
+  # roaming, walking behind a wall -- fails until they rescan. Keeping the
+  # last N valid means a scanned code stays usable for roughly
+  # N x rotate_interval_minutes, so unlucky timing stops mattering.
+  #
+  # 1 restores the old single-key behaviour. Raising it widens the window in
+  # which an already-departed guest could still rejoin on a cached key, so it
+  # trades strictness for not stranding people. 3 is a sensible default.
+  valid_passphrases: 3
+
+  length: 12
+  psk_file: /etc/hostapd/photobooth.psk
+  # Fixed paths so the photobooth display can just show the file.
+  qr_path: /var/lib/photobooth/wifi-qr.png
+  password_path: /var/lib/photobooth/current-password.txt
+
+session:
+  # Wall-clock cap from first association.
+  hard_limit_minutes: 30
+  # Idle cap: no portal request (page load or heartbeat) for this long -> kick.
+  # Deliberately generous, because bulk downloads are slow on this radio.
+  soft_limit_minutes: 5
+  # A bulk download can outlive the page that started it, so starting one
+  # registers a server-side grace window that suppresses the idle kick.
+  bulk_download_grace_minutes: 10
+  poll_interval_seconds: 10
+  # Gallery page posts a heartbeat this often while open.
+  heartbeat_interval_seconds: 30
+
+gallery:
+  photo_dir: /home/pi/repos/photobooth/photos
+  thumb_dir: /var/lib/photobooth/thumbs
+  zip_path: /var/lib/photobooth/all-photos.zip
+  thumb_width: 480
+  # App-layer cap: the gallery lists at most this many photos (newest first).
+  # nginx serves the files directly, so the app cannot meter per-file
+  # downloads -- capping the listing is the enforceable equivalent.
+  max_photos_per_user: 50
+  # Wait for the directory to stop changing before rebuilding the zip, so a
+  # burst of shots produces one rebuild rather than one per photo.
+  ingest_debounce_seconds: 5
+  ingest_poll_seconds: 10
+
+limits:
+  # Simultaneous downloads per device. 2 is right for this chip; 3+ makes every
+  # transfer slower without finishing sooner.
+  per_device_downloads: 2
+  # Global cap so the radio is not oversubscribed by several guests at once.
+  global_downloads: 6
+  portal_rate_per_second: 10
+  portal_rate_burst: 20
+
+portal:
+  # gunicorn binds here; nginx proxies to it. Two workers is the ceiling worth
+  # using on 1 GB -- see README, RAM is the binding constraint on this box.
+  bind: 127.0.0.1:8080
+  workers: 2
+  state_dir: /run/photobooth

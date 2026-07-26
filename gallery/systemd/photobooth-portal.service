@@ -1,0 +1,35 @@
+[Unit]
+Description=Photobooth captive portal / gallery
+# Wants, not Requires: the portal is still useful (and debuggable over the LAN)
+# even if the AP is not up yet.
+Wants=network.target
+After=network.target
+
+[Service]
+Type=exec
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/repos/photobooth/gallery
+# tmpfs state dir, owned by us, recreated on every boot. Session state is
+# rewritten every few seconds and need not survive a reboot, so keeping it off
+# the SD card avoids pointless flash wear.
+# 2 workers is the ceiling worth using on 1 GB. Threads rather than more
+# workers: this app is IO-bound (sqlite + directory listings), and each extra
+# worker is another ~30 MB of interpreter.
+ExecStart=/usr/bin/gunicorn --workers 2 --threads 4 \
+    --bind 127.0.0.1:8080 --timeout 30 --graceful-timeout 10 \
+    --access-logfile - --error-logfile - portal:app
+Restart=always
+RestartSec=2
+# Hardening: the portal only ever reads photos and writes /run state.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# /run/photobooth comes from tmpfiles.d/photobooth.conf, owned by pi.
+# RuntimeDirectory= here would chown it to this unit's user and lock
+# the other service out.
+ReadWritePaths=/run/photobooth
+
+[Install]
+WantedBy=multi-user.target

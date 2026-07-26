@@ -1,0 +1,44 @@
+# Rendered by render_configs.py from config.yaml -- edit that, not this.
+
+interface=@INTERFACE@
+driver=nl80211
+ssid=@SSID@
+
+# 2.4 GHz only. hw_mode=g plus ieee80211n=1 gives 802.11n on the 2.4 GHz band,
+# which is all the BCM43438 has.
+hw_mode=g
+channel=@CHANNEL@
+ieee80211n=1
+wmm_enabled=1
+
+# 20 MHz channels only, deliberately. 40 MHz on 2.4 GHz overlaps two of the
+# three usable channels and, on a single-antenna chip in a crowded room, loses
+# more to interference and retries than the extra width ever wins back.
+ht_capab=[SHORT-GI-20]
+
+# Regulatory domain. ieee80211d advertises it so clients pick legal power/rates.
+country_code=@COUNTRY_CODE@
+ieee80211d=1
+
+# The chip degrades badly beyond a handful of *active* clients. This is a hard
+# stop so the radio stays usable rather than collapsing for everybody.
+max_num_sta=@MAX_NUM_STA@
+
+# WPA2-PSK only. auth_algs=1 is open-system auth (correct for WPA2); WEP is off.
+auth_algs=1
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+
+# The passphrase lives in a separate key file rather than inline as
+# wpa_passphrase. That is what makes RELOAD_WPA_PSK possible, letting the
+# rotator swap the password WITHOUT deauthenticating connected clients.
+# See rotate_password.py.
+wpa_psk_file=@PSK_FILE@
+
+# Control socket for hostapd_cli: needed by both the rotator (RELOAD_WPA_PSK)
+# and the session manager (list_sta / deauthenticate).
+ctrl_interface=/var/run/hostapd
+ctrl_interface_group=0
+
+ignore_broadcast_ssid=0

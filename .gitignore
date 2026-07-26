@@ -1,0 +1,17 @@
+# Captured and mock photos -- hundreds of MB of Sony RAW/JPEG that would be
+# baked into history forever. The booth creates this directory at runtime.
+photos/
+
+# Generated gallery artefacts (thumbnails, the prebuilt zip, session state).
+# All of it is rebuilt by ingest.py from photos/ on the Pi.
+gallery/var/
+*.zip
+
+__pycache__/
+*.py[cod]
+
+# lgpio notification fifo, created next to the process by gpiozero's lgpio pin
+# factory. Appears whenever the booth runs on real hardware.
+.lgd-nfy*
+
+dump.txt

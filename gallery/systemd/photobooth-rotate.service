@@ -1,0 +1,30 @@
+[Unit]
+Description=Photobooth WPA passphrase rotator + join QR
+Requires=hostapd.service
+After=hostapd.service
+
+[Service]
+# A looping service rather than a systemd timer, so the interval stays in
+# config.yaml (the single config file) instead of being duplicated into a
+# .timer unit. Changing it needs only a restart of this unit.
+Type=exec
+User=root
+WorkingDirectory=/home/pi/repos/photobooth/gallery
+ExecStart=/usr/bin/python3 rotate_password.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# hostapd_cli creates its reply socket under /tmp (wpa_ctrl default client
+# dir). ProtectSystem=strict mounts the WHOLE hierarchy read-only except
+# /dev /proc /sys -- including /tmp -- so every hostapd_cli call failed with
+# "wpa_ctrl_open: Read-only file system". That was silent: list_sta returned
+# empty and no limit was ever enforced.
+# PrivateTmp is NOT a fix -- a private /tmp is invisible to hostapd, which
+# then cannot deliver the reply and every command times out. It must be the
+# real, shared /tmp.
+ReadWritePaths=/etc/hostapd /var/lib/photobooth /tmp
+
+[Install]
+WantedBy=multi-user.target
