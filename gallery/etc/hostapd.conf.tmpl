@@ -31,9 +31,14 @@ wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 
 # The passphrase lives in a separate key file rather than inline as
-# wpa_passphrase. That is what makes RELOAD_WPA_PSK possible, letting the
-# rotator swap the password WITHOUT deauthenticating connected clients.
-# See rotate_password.py.
+# wpa_passphrase, so the rotator can add a new key with RELOAD_WPA_PSK instead
+# of rewriting and restarting hostapd.
+#
+# RELOAD_WPA_PSK is NOT free: hostapd 2.10 re-keys associated stations, so
+# connected phones do see a brief interruption. The key ring is what makes that
+# tolerable -- several passphrases stay valid at once (password.valid_passphrases),
+# so a guest whose phone cached an older one can still rejoin, and anyone
+# rescanning the QR always gets a working password. See rotate_password.py.
 wpa_psk_file=@PSK_FILE@
 
 # Control socket for hostapd_cli: needed by both the rotator (RELOAD_WPA_PSK)

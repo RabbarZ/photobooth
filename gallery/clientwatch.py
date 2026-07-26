@@ -192,13 +192,21 @@ def preflight(config: dict) -> list[str]:
     except OSError:
         return [f"{conf} missing -- run setup.sh"]
 
-    # Option 114 must be a *quoted* string, or dnsmasq encodes the wrong type
-    # and iOS silently discards it. This is invisible in the dnsmasq log.
-    if 'dhcp-option=114,"' not in text:
+    # Two independent ways option 114 silently fails, both invisible in the
+    # dnsmasq log:
+    #
+    #   1. Unquoted -- dnsmasq encodes the wrong option type and iOS discards it.
+    #   2. Plain dhcp-option -- only sent if the client listed 114 in its
+    #      Parameter Request List (option 55), and iOS does not always ask.
+    #      -force sends it unconditionally.
+    if 'dhcp-option-force=114,"' not in text:
+        hint = ('it is not sent with -force, so it only reaches clients that '
+                'explicitly request it'
+                if "114" in text else "it is missing entirely")
         problems.append(
-            'DHCP option 114 is not quoted in dnsmasq.conf. iOS 14+ uses it as '
-            'its primary captive signal and drops it when malformed. '
-            'Expected: dhcp-option=114,"http://<ip>/"')
+            f'DHCP option 114 will not reach iOS: {hint}. It is the primary '
+            'captive signal on iOS 14+. Expected: '
+            'dhcp-option-force=114,"http://<ip>/captive-api"')
     if "local=/#/" not in text:
         problems.append(
             "dnsmasq will answer AAAA with REFUSED, which reads to iOS as a "
