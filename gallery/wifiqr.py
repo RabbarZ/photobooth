@@ -41,7 +41,24 @@ def wifi_payload(ssid: str, passphrase: str, hidden: bool = False) -> str:
 
 def write_qr(path: Path, ssid: str, passphrase: str,
              box_size: int = 10, border: int = 2) -> Path:
-    """Render the join QR to `path`, atomically.
+    """Render the join QR to `path`, atomically."""
+    return write_payload(path, wifi_payload(ssid, passphrase),
+                         box_size=box_size, border=border)
+
+
+def write_url_qr(path: Path, url: str,
+                 box_size: int = 10, border: int = 2) -> Path:
+    """Render a plain-URL QR to `path`, atomically.
+
+    Unlike the join QR this encodes no credentials, so it never changes and is
+    written once at AP bring-up rather than on the rotation timer.
+    """
+    return write_payload(path, url, box_size=box_size, border=border)
+
+
+def write_payload(path: Path, payload: str,
+                  box_size: int = 10, border: int = 2) -> Path:
+    """Render `payload` to `path`, atomically.
 
     Atomic because the booth display polls this file: a half-written PNG would
     either fail to load or, worse, render as a corrupt code someone tries to
@@ -49,13 +66,13 @@ def write_qr(path: Path, ssid: str, passphrase: str,
 
     Low error correction is deliberate: it keeps the module count down, so the
     code stays chunky and scannable at the size shown on the booth screen.
-    Wi-Fi payloads are short, and the screen is not a dirty warehouse label.
+    These payloads are short, and the screen is not a dirty warehouse label.
     """
     import qrcode  # imported late so --help works without the dependency
 
     qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L,
                        box_size=box_size, border=border)
-    qr.add_data(wifi_payload(ssid, passphrase))
+    qr.add_data(payload)
     qr.make(fit=True)
     image = qr.make_image(fill_color="black", back_color="white")
 
@@ -96,10 +113,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--ssid")
     parser.add_argument("--passphrase")
+    parser.add_argument("--url", help="encode this URL instead of a Wi-Fi join")
     parser.add_argument("--out", type=Path, help="write the PNG here")
     parser.add_argument("--show", action="store_true",
                         help="print the payload instead of writing a PNG")
     args = parser.parse_args()
+
+    if args.url:
+        if args.show or not args.out:
+            print(args.url)
+            return 0
+        path = write_url_qr(args.out, args.url)
+        modules = module_count(path)
+        print(f"{path} ({modules} modules)" if modules else str(path))
+        return 0
 
     ssid, passphrase = args.ssid, args.passphrase
     if ssid is None or passphrase is None:

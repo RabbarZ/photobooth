@@ -14,46 +14,117 @@ no-hosts
 domain-needed
 bogus-priv
 
-# THE captive-portal trick: every name in existence resolves to the Pi, so
-# whatever host a phone reaches for, it lands on the portal.
-address=/#/@ADDRESS@
-
-# Answer AAAA (IPv6) queries with NOERROR and no records, rather than REFUSED.
+# There is no captive portal. Guests reach the gallery by scanning the second
+# QR on the booth screen, which encodes the address directly, so nothing here
+# hijacks DNS and no name is answered that does not belong to us.
 #
-# This network is IPv4-only. Without this, dnsmasq REFUSES AAAA lookups, and a
-# REFUSED reply reads to a client as "this resolver is broken" rather than
-# "this name has no IPv6". iOS in particular treats that as an inconclusive
-# probe: it may retry or fall back instead of deciding it is behind a captive
-# portal, which is one reason the login sheet fails to appear on its own.
-# filter-AAAA does NOT work here: it only applies to queries dnsmasq forwards
-# upstream, and ours are all answered locally by the address=/#/ wildcard.
-# The local equivalent is an empty wildcard AAAA record, which yields NOERROR
-# with zero answers -- "this name exists, it has no IPv6" -- so the client
-# falls straight back to IPv4 instead of retrying a seemingly broken resolver.
-# Mapping to a real "::" address would be worse: clients would try to connect
-# to it and stall.
-local=/#/
+# Deliberately NOT present, and not to be re-added without reinstating the
+# whole portal:
+#   address=/#/         -- resolved every name to the Pi, which is what made an
+#                          arbitrary URL land on the portal.
+#   dhcp-option-force=114 -- the RFC 8910 captive-portal URI, which is what told
+#                          iOS/Android to open a sign-in sheet at all.
+#
+# A friendly name for anyone who would rather type than scan.
+address=/photobooth/@ADDRESS@
+address=/photobooth.local/@ADDRESS@
+
+# ---------------------------------------------------------------------------
+# Connectivity checks, answered locally and differently per platform.
+#
+# Every OS fetches a known URL right after joining and decides from the reply
+# whether the network works. With no upstream those lookups fail, the device
+# concludes "no internet", and iOS puts up the "Stay connected / Use mobile
+# data" prompt on top of the booth -- which guests answer wrongly and drop off
+# the Wi-Fi before their photos finish downloading.
+#
+# Pointing the probe names here lets nginx answer them, and the two platforms
+# get deliberately opposite answers:
+#
+#   iOS/macOS, Windows, Firefox, Ubuntu -> success. No prompt, no portal; those
+#       guests reach the gallery by scanning the second QR.
+#   Android                             -> a redirect, so it declares a captive
+#       portal and offers "Sign in to network", opening the gallery for them.
+#
+# This is NOT the wildcard that used to be here: only these names are hijacked,
+# so a lookup for anything else still fails honestly instead of landing on the
+# gallery.
+# ---------------------------------------------------------------------------
+
+# Apple: captive.apple.com/hotspot-detect.html
+#
+# Only these two names. A bare `address=/apple.com/` would match every
+# subdomain -- push, iCloud, the App Store -- and point them all at a web
+# server that is not them, so instead of failing cleanly those services would
+# get a stray 204 and behave unpredictably.
+address=/captive.apple.com/@ADDRESS@
+address=/www.apple.com/@ADDRESS@
+
+# Android / Chrome: */generate_204
+#
+# These are answered the OPPOSITE way from the others -- nginx redirects them
+# instead of returning 204, so Android declares a captive portal and offers
+# "Sign in to network", which opens the gallery. See the nginx template.
+#
+# www.google.com is deliberately absent: Android's HTTPS probe against it must
+# FAIL for the verdict to come out as "captive portal" rather than "no
+# internet". Adding it here would break the very behaviour this enables.
+address=/connectivitycheck.gstatic.com/@ADDRESS@
+address=/connectivitycheck.android.com/@ADDRESS@
+address=/clients3.google.com/@ADDRESS@
+address=/www.gstatic.com/@ADDRESS@
+address=/android.clients.google.com/@ADDRESS@
+# Android's *fallback* probes, tried when the first one is inconclusive.
+# www.google.com is safe to point here despite the note above: the HTTPS probe
+# still fails, because nothing listens on 443 -- the TCP connection is refused
+# outright, which is a faster and cleaner failure than a REFUSED DNS reply.
+address=/www.google.com/@ADDRESS@
+address=/play.googleapis.com/@ADDRESS@
+
+# Windows: msftconnecttest/ncsi
+address=/www.msftconnecttest.com/@ADDRESS@
+address=/www.msftncsi.com/@ADDRESS@
+
+# Firefox / Ubuntu
+address=/detectportal.mozilla.org/@ADDRESS@
+address=/connectivity-check.ubuntu.com/@ADDRESS@
+
+# Answer AAAA for those names with NOERROR and no records rather than REFUSED.
+# This network is IPv4-only; a REFUSED reply reads to a client as "this
+# resolver is broken", which is itself enough to make iOS distrust the network
+# even when the IPv4 probe succeeded.
+local=/captive.apple.com/
+local=/www.apple.com/
+local=/connectivitycheck.gstatic.com/
+local=/connectivitycheck.android.com/
+local=/www.msftconnecttest.com/
+local=/detectportal.mozilla.org/
 
 dhcp-range=@DHCP_START@,@DHCP_END@,@NETMASK@,@DHCP_LEASE@
-dhcp-option=option:router,@ADDRESS@
 dhcp-option=option:dns-server,@ADDRESS@
 
-# RFC 8910 captive-portal URI. This must point at an RFC 8908 JSON API, NOT at
-# a login page: iOS 14+ and Android 11+ query it *instead of* running the old
-# HTTP probe, and expect an application/captive+json document. Pointing it at
-# the HTML portal makes iOS fetch the page, fail to parse a captive status, and
-# never open the sign-in sheet at all -- it looks like detection is broken.
+# No option:router. Advertising a default gateway that routes nowhere makes a
+# phone treat this as its internet path and stall on every lookup; without one
+# the OS knows the network is local-only and keeps using mobile data for
+# everything else, while 10.42.0.1 stays reachable.
+
+# ---------------------------------------------------------------------------
+# RFC 8910 captive-portal URI -- for Android devices ONLY.
 #
-# The API answers {"captive": true}, which is what actually tells the device
-# it must log in. It does NOT mark the device authenticated, so the OS still
-# shows "login required" and still re-pops the portal on wake -- which is what we
-# want. It makes the portal open more reliably on recent iOS and Android.
-# dhcp-option-force, NOT dhcp-option: a DHCP server only sends options the
-# client listed in its Parameter Request List (option 55). iOS does not always
-# ask for 114, so a plain dhcp-option is silently dropped -- the config looks
-# correct, dnsmasq logs nothing, and the phone never learns the portal URL.
-# -force sends it unconditionally.
-dhcp-option-force=114,"http://@ADDRESS@/captive-api"
+# On Android 11+ this is the primary signal; the HTTP probe is a fallback, and
+# relying on the probe alone is why the portal did not appear reliably. But
+# option 114 is normally broadcast to every client, and iOS acts on it too --
+# which would put the sign-in sheet back on iPhones, the exact thing we removed.
+#
+# dnsmasq can target it. Android sets DHCP option 60 (vendor class) to
+# "android-dhcp-<version>"; iOS and macOS send no such string. Matching that
+# substring tags only Android leases, and the option goes to that tag alone.
+#
+# -force, not a plain dhcp-option: a client only receives options it listed in
+# its Parameter Request List (option 55), and it is not guaranteed to ask for
+# 114. -force sends it regardless.
+dhcp-vendorclass=set:android,android-dhcp
+dhcp-option-force=tag:android,114,"http://@ADDRESS@/captive-api"
 
 dhcp-authoritative
 

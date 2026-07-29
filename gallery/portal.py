@@ -1,10 +1,9 @@
-"""Captive portal that IS the gallery.
+"""The photo gallery, served over the booth's own Wi-Fi.
 
-Deliberately never marks a client as authenticated. Every OS connectivity
-probe gets a redirect instead of the success response it wants, so the device
-stays in "login required" and the OS re-pops the portal when the phone wakes.
-That is the intended re-entry path after a guest takes another photo, not a
-bug to be fixed.
+An ordinary web app on a network with no internet. There is no captive portal:
+guests scan one QR to join the Wi-Fi and a second to open this page. Nothing
+here hijacks DNS, answers OS connectivity probes, or claims the device must
+log in -- a phone on this network simply has no internet, and says so.
 
 nginx serves photos, thumbnails and the prebuilt zip directly; this app only
 renders the listing and tracks session activity.
@@ -86,79 +85,41 @@ def zip_info() -> dict | None:
     return {"bytes": size, "megabytes": round(size / 1_000_000, 1)} if size else None
 
 
-# iOS opens captive portals in the Captive Network Assistant, a restricted
-# mini-browser that identifies itself with this token. It gives up and lets the
-# user dismiss the sheet if the page is slow, and a full gallery is dozens of
-# thumbnails over a saturated 2.4 GHz link. Serving it a light page makes the
-# sheet appear reliably; the guest taps through to the real gallery in Safari,
-# where downloads work properly anyway (the CNA cannot save files).
-CNA_TOKEN = "CaptiveNetworkSupport"
-
-
-def is_captive_browser() -> bool:
-    """True when the request comes from a captive-portal mini-browser.
-
-    Detecting this is fiddlier than it looks. Only the initial probe carries a
-    CaptiveNetworkSupport User-Agent; once iOS opens the sheet, its page
-    requests use an ordinary Safari-like UA with no marker at all. Matching
-    solely on that token therefore sends the CNA the full gallery -- dozens of
-    thumbnails over a busy 2.4 GHz link -- and iOS closes the sheet before it
-    finishes loading, which looks exactly like detection failing.
-
-    The reliable signal is the absence of a Referer combined with an Apple
-    mobile UA: the sheet always opens a page cold, whereas a guest arriving in
-    Safari has either typed the address or followed our link.
-    """
-    if request.headers.get("X-Captive-Probe"):
-        return True
-    agent = request.headers.get("User-Agent", "")
-    if CNA_TOKEN in agent:
-        return True
-    # Apple mini-browser: iOS UA, no Referer, and not our own gallery link.
-    apple_mobile = ("iPhone" in agent or "iPad" in agent) and "Safari/" not in agent
-    return apple_mobile and not request.headers.get("Referer")
-
-
 @app.route("/")
 def gallery():
     touch_session()
-    if is_captive_browser():
-        # Deliberately no thumbnails: one small HTML response, nothing else to
-        # fetch, so the sheet renders instantly instead of timing out.
-        return render_template("welcome.html", photos=len(list_photos()))
+    # No zip_file/grace_minutes: the page offers per-photo saving only. The zip
+    # itself still exists -- see /api/download-all.
     return render_template(
         "gallery.html",
         photos=list_photos(),
-        zip_file=zip_info(),
         heartbeat_seconds=int(CONFIG["session"]["heartbeat_interval_seconds"]),
-        grace_minutes=int(CONFIG["session"]["bulk_download_grace_minutes"]),
     )
 
 
 @app.get("/captive-api")
 def captive_api():
-    """RFC 8908 Captive Portal API, advertised by DHCP option 114.
+    """RFC 8908 captive-portal status. Reached by Android devices only.
 
-    Option 114 (RFC 8910) does NOT point at a login page -- it points at this
-    JSON endpoint, and iOS 14+ / Android 11+ query it *instead of* running the
-    old HTTP probe. Serving HTML here is why the sheet never opened: the OS
-    fetched the URL, failed to parse a captive-status document, and gave up
-    without ever deciding it was behind a portal.
+    dnsmasq advertises this URL in DHCP option 114, but only to leases tagged
+    `android` by their vendor class -- see the dnsmasq template. iOS never
+    learns the URL, so it never asks, and iPhones stay on the "connectivity is
+    fine" path with no sign-in sheet.
 
-    `captive: true` is what actually tells the device "you must log in", and
-    it is what makes the sign-in sheet appear. We never flip it to false, so
-    the device stays in the login-required state and re-opens the portal when
-    it wakes -- the same re-entry behaviour the HTTP probes give us.
+    On Android 11+ this is the primary detection route and the HTTP probe is
+    only a fallback, so answering it is what makes the portal appear promptly
+    rather than after a delay or not at all.
+
+    The media type is mandatory: a generic application/json is ignored and the
+    device falls back to probing, which looks exactly like this not working.
     """
     touch_session()
     body = jsonify({
         "captive": True,
-        # Where to send the user. iOS opens this in the sheet.
+        # Where Android opens its login browser.
         "user-portal-url": f"http://{CONFIG['access_point']['address']}/",
-        # No venue-info-url: it adds a second fetch for no benefit here.
         "can-extend-session": True,
     })
-    # The media type is mandatory; a generic application/json is ignored.
     body.headers["Content-Type"] = "application/captive+json"
     return body
 
@@ -178,6 +139,12 @@ def download_all():
     page that started it -- phone locks, browser is backgrounded, heartbeats
     stop. Relying on the client-side heartbeat alone would kick the guest
     mid-download, so the grace window is recorded server-side instead.
+
+    No longer reachable from the gallery: the "Download all" button was taken
+    out, so guests save photos individually. Kept because the zip is still
+    built by ingest.py and still served by nginx at /all-photos.zip, and
+    anyone fetching that URL directly -- the operator collecting the evening's
+    photos, most likely -- needs the same protection from the idle kick.
     """
     mac = touch_session()
     grace = float(CONFIG["session"]["bulk_download_grace_minutes"]) * 60
@@ -213,45 +180,30 @@ def status():
 
 
 # --------------------------------------------------------------------------
-# captive-portal behaviour
+# responses
 # --------------------------------------------------------------------------
 #
-# nginx bounces probes aimed at other hostnames, but a probe can also arrive
-# addressed straight at us (some clients retry against the portal host). These
-# routes make sure such a request still gets a redirect rather than the success
-# response that would clear the "login required" flag.
-
-PROBE_PATHS = [
-    "/generate_204",                    # Android / Chrome
-    "/gen_204",
-    "/hotspot-detect.html",             # iOS / macOS
-    "/library/test/success.html",
-    "/connecttest.txt",                 # Windows
-    "/ncsi.txt",
-    "/success.txt",                     # Firefox
-    "/canonical.html",                  # Ubuntu / GNOME
-]
-
-for _path in PROBE_PATHS:
-    app.add_url_rule(_path, f"probe{_path}", lambda: redirect("/", code=302),
-                     methods=["GET", "HEAD"])
+# There are deliberately no OS-probe routes here. The old build answered
+# /generate_204, /hotspot-detect.html, /connecttest.txt and friends with a 302
+# so no device could ever conclude it had internet, which is what kept the
+# sign-in sheet re-appearing. With no captive portal those probes are none of
+# our business: they no longer resolve to us, and a phone is free to decide
+# this network has no internet, because it does not.
 
 
 @app.errorhandler(404)
-def catch_all(_err):
-    """Anything unrecognised goes to the gallery, never a 404 dead end."""
+def not_found(_err):
+    """A wrong URL goes to the gallery -- the only page a guest wants."""
     return redirect("/", code=302)
 
 
 @app.after_request
 def no_store(response):
-    """Never let a probe response or the gallery be cached.
+    """Keep the listing uncached.
 
-    A cached 204 or a cached "Success" page would let the OS decide it has
-    internet, and the portal would stop re-opening.
+    Not a captive-portal measure any more: photos appear while guests are
+    looking at the page, and a cached listing hides the shot just taken.
     """
-    # set(), not add: nginx also adds Cache-Control, and duplicate headers on
-    # a captive-portal probe response are needless ambiguity.
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     return response

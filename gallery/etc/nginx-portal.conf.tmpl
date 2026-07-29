@@ -13,45 +13,124 @@ limit_req_zone $binary_remote_addr zone=portalreq:10m rate=@RATE@r/s;
 limit_conn_status 503;
 limit_req_status 429;
 
-# Anything not addressed to the portal host gets bounced to it. This is what
-# answers the OS connectivity probes -- captive.apple.com,
-# connectivitycheck.gstatic.com, www.msftconnecttest.com, detectportal.mozilla.org
-# and friends all resolve to us via dnsmasq and land here.
-#
-# We return a redirect instead of the 204 / "Success" / "Microsoft Connect Test"
-# body each OS is looking for. The device therefore never concludes it has
-# internet, stays in the "login required" state, and re-opens the portal when
-# the phone wakes. That re-entry path is the whole point: a guest who takes a
-# second photo gets the gallery popped up again without doing anything.
-server {
-    listen 80 default_server;
-    server_name _;
-    access_log off;
+# Connectivity probes are logged to their own file, and only they are. The
+# question "did this phone probe, and what did we tell it?" is otherwise
+# unanswerable -- the gallery runs with access_log off, and a portal that fails
+# to appear leaves no trace at all. One line per probe, a handful per guest.
+log_format probes '$time_iso8601 $remote_addr $host$request_uri -> $status '
+                  '"$http_user_agent"';
 
-    # Apple's probe gets a 302 to the portal, which is what essentially every
-    # deployed captive portal does and what iOS handles most reliably.
-    #
-    # An earlier revision returned 200 with the portal body inline here, on the
-    # theory that the CNA mishandles redirects on the probe. Testing with a real
-    # iPhone did not support that: the probe was answered, iOS kept re-probing,
-    # and no sheet appeared either way -- so the 200 bought nothing and diverged
-    # from the well-trodden path. Reverted.
-    #
-    # The response must never contain "Success", or iOS concludes the network
-    # has working internet and stops showing the portal entirely.
-    # Everything else still bounces to the portal. Android and Windows both
-    # handle the redirect correctly and prefer it.
-    #
-    # This MUST be a location block, not a bare server-level `return`: a
-    # server-level return short-circuits location matching entirely, so the
-    # Apple probe above would never be reached.
-    location / {
-        return 302 http://@ADDRESS@/;
+# The old blanket captive portal is gone: there is no longer a default_server
+# that 302s every hostname. What remains is deliberate and split by platform --
+# this block reassures everyone except Android, the next one gives Android a
+# portal, and the gallery is the default_server so an unexpected Host still
+# lands on the photos.
+
+# ---------------------------------------------------------------------------
+# Connectivity checks: tell iOS, Windows, Firefox and Ubuntu the network is fine.
+#
+# This is the exact inverse of the captive portal that used to live here. That
+# build answered these probes with a 302 so no device could conclude it had
+# internet, which is what made the sign-in sheet appear. This one answers with
+# the success response each OS is waiting for, so no device concludes it has a
+# *problem* -- specifically so iOS stops asking "Stay connected or use mobile
+# data?" over the top of the booth.
+#
+# The bodies below are exact and are not stylistic choices. Apple checks for
+# this precise document; Windows compares the body byte for byte; Android wants
+# a 204 with genuinely empty content. Anything else and the OS decides the
+# network is captive or broken and starts nagging again.
+#
+# Served straight from nginx, never proxied: phones re-probe every few tens of
+# seconds, and with a room full of guests that is a steady trickle that has no
+# business waking gunicorn.
+server {
+    listen 80;
+    server_name captive.apple.com www.apple.com
+                www.msftconnecttest.com www.msftncsi.com
+                detectportal.mozilla.org connectivity-check.ubuntu.com;
+    access_log /var/log/nginx/photobooth-probes.log probes;
+
+    # No caching: a phone that cached a success and later reconnected to a real
+    # network -- or vice versa -- would act on a stale verdict.
+    add_header Cache-Control "no-store" always;
+
+    # Windows.
+    location = /connecttest.txt {
+        default_type text/plain;
+        return 200 "Microsoft Connect Test";
     }
+    location = /ncsi.txt {
+        default_type text/plain;
+        return 200 "Microsoft NCSI";
+    }
+
+    # Firefox.
+    location = /success.txt {
+        default_type text/plain;
+        return 200 "success\n";
+    }
+
+    # Ubuntu / GNOME.
+    location = /canonical.html {
+        default_type text/html;
+        return 200 "<html><body>NetworkManager is online</body></html>";
+    }
+
+    # Apple. hotspot-detect.html is the one iOS actually fetches; the
+    # /library/test/success.html path is the macOS/older variant.
+    location = /hotspot-detect.html {
+        default_type text/html;
+        return 200 "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n";
+    }
+    location = /library/test/success.html {
+        default_type text/html;
+        return 200 "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n";
+    }
+
+    # Any other path on these hostnames: the device is trying to reach the real
+    # site, which is not here. 204 rather than the gallery -- a phone that got
+    # photos back from apple.com would be a stranger surprise than nothing.
+    location / { return 204; }
+}
+
+# ---------------------------------------------------------------------------
+# Android is handled the opposite way, on purpose: it gets a captive portal.
+#
+# Android's check is `generate_204`, and it believes the network is working
+# only if it receives exactly a 204. Anything else -- including this redirect
+# -- makes it declare a captive portal and offer "Sign in to network", which
+# opens the target in its own login browser. So the same trick that reassures
+# iOS would suppress Android's portal, and the redirect that gives Android a
+# portal would make iOS nag. Two hostname families, two opposite answers.
+#
+# Android also runs an HTTPS probe against www.google.com to tell a portal from
+# a broken network, and that probe must FAIL. It does: www.google.com resolves
+# here, but nothing listens on 443, so the connection is refused outright --
+# a faster, cleaner failure than the REFUSED DNS reply it used to get. Failing
+# HTTPS plus this redirecting HTTP probe is exactly what Android reads as
+# "captive portal" rather than "no internet".
+#
+# The hostname list includes Android's fallback probes (www.google.com,
+# play.googleapis.com), which it tries when the first result is inconclusive.
+#
+# DHCP option 114 is also sent now, but ONLY to Android, matched on its vendor
+# class -- see the dnsmasq template. Do not turn that into an untagged option:
+# iOS would act on it too and the sign-in sheet would be back on iPhones.
+server {
+    listen 80;
+    server_name connectivitycheck.gstatic.com connectivitycheck.android.com
+                clients3.google.com www.gstatic.com android.clients.google.com
+                www.google.com play.googleapis.com;
+    access_log /var/log/nginx/photobooth-probes.log probes;
+    add_header Cache-Control "no-store" always;
+
+    # Never 204 here -- that is the one response that would say "all fine".
+    location / { return 302 http://@ADDRESS@/; }
 }
 
 server {
-    listen 80;
+    listen 80 default_server;
     server_name @ADDRESS@ photobooth photobooth.local;
 
     root /var/lib/photobooth;
@@ -99,17 +178,20 @@ server {
         expires 7d;
     }
 
-    # ---- RFC 8908 captive status API ---------------------------------------
-    # Queried by iOS/Android via DHCP option 114. Kept out of the rate-limited
-    # location: the OS polls it, and a 429 here reads as a broken portal.
+    # ---- RFC 8908 captive status, Android only -----------------------------
+    # dnsmasq advertises this in option 114 to Android leases alone. Kept out
+    # of the rate-limited location: the OS polls it, and a 429 here reads as a
+    # broken portal. Logged, because "did the phone ever ask?" is the first
+    # question when the portal does not appear.
     location = /captive-api {
+        access_log /var/log/nginx/photobooth-probes.log probes;
         proxy_pass http://@PORTAL_BIND@/captive-api;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         add_header Cache-Control "no-store" always;
     }
 
-    # ---- the portal app ----------------------------------------------------
+    # ---- the gallery app ---------------------------------------------------
     location / {
         limit_req zone=portalreq burst=@BURST@ nodelay;
         proxy_pass http://@PORTAL_BIND@;

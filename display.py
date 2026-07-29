@@ -74,7 +74,15 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 # systems beyond the filename.
 DEFAULT_QR_PATH = Path("/var/lib/photobooth/wifi-qr.png")
 DEFAULT_QR_HEIGHT = 260
-DEFAULT_QR_CAPTION = "Scan for your photos"
+DEFAULT_QR_CAPTION = "1. Mit WLAN verbinden"
+
+# Written once at AP bring-up (gallery/accesspoint.py), never rotated: it
+# encodes the portal URL, not credentials. Scanning it opens the gallery
+# directly. Same size as the join QR and on the same plate: the two are one
+# two-step instruction, and a smaller second code read as optional when it is
+# not -- but it is useless before the phone is on the network, hence "2.".
+DEFAULT_PORTAL_QR_PATH = Path("/var/lib/photobooth/portal-qr.png")
+DEFAULT_PORTAL_QR_CAPTION = "2. Galerie öffnen"
 
 POLL_INTERVAL_S = 0.3
 BACKGROUND = (0, 0, 0)
@@ -238,85 +246,117 @@ class CommandReader:
         return commands
 
 
-class QrBadge:
-    """The Wi-Fi join QR, composited into the corner of whatever is on screen.
+class BadgePanel:
+    """Both QR codes on one white plate: step 1 above step 2.
 
-    The rotator rewrites the PNG in place every time the passphrase changes, so
-    the file is re-read whenever its mtime moves. It is written atomically
-    (os.replace), so a partially-written PNG is never observed.
+    One plate rather than two, because the codes are a single two-step
+    instruction and two floating boxes read as two unrelated offers. Both codes
+    are rendered at the same size for the same reason -- differing sizes imply
+    one matters more, when in fact neither works without the other.
+
+    The render loop only calls changed() and blit_onto(), so it does not care
+    how many codes are on the plate.
     """
 
-    def __init__(self, path: Path, height: int, caption: str) -> None:
-        self.path = path
+    def __init__(self, entries: "list[tuple[Path, str]]", height: int) -> None:
+        self.entries = entries
         self.height = height
-        self.caption = caption
-        self._mtime: float | None = None
-        self._badge: pygame.Surface | None = None
+        self._mtimes: list[float | None] = [None] * len(entries)
+        self._panel: pygame.Surface | None = None
 
-    def _compose(self) -> pygame.Surface | None:
+    # -- composition ---------------------------------------------------------
+
+    def _load(self, path: Path) -> pygame.Surface | None:
         try:
-            image = Image.open(self.path).convert("RGB")
+            image = Image.open(path).convert("RGB")
         except Exception as err:
-            print(f"Cannot load QR {self.path}: {err}", file=sys.stderr)
+            print(f"Cannot load QR {path}: {err}", file=sys.stderr)
             return None
-
         # NEAREST, deliberately. A QR is a binary bitmap: smooth interpolation
         # blurs the module edges and makes it noticeably harder for a phone to
         # lock on, especially from across a room.
         image = image.resize((self.height, self.height), Image.NEAREST)
-        qr = pygame.image.frombuffer(image.tobytes(), image.size, "RGB")
+        return pygame.image.frombuffer(image.tobytes(), image.size, "RGB")
 
+    def _compose(self) -> pygame.Surface | None:
         pad = max(8, self.height // 20)
         font = _font(max(16, self.height // 9))
-        label = font.render(self.caption, True, (20, 20, 20))
 
-        width = max(self.height, label.get_width()) + pad * 2
-        total = self.height + pad * 2 + (label.get_height() + pad // 2 if self.caption else 0)
+        # Load first: a code whose file is missing is skipped entirely rather
+        # than leaving a white gap where a QR should be.
+        blocks = []
+        for path, caption in self.entries:
+            qr = self._load(path)
+            if qr is None:
+                continue
+            blocks.append((qr, font.render(caption, True, (20, 20, 20))
+                           if caption else None))
+        if not blocks:
+            return None
 
-        # Opaque white plate: the QR needs its quiet zone and hard contrast
-        # regardless of how dark or busy the photo behind it happens to be.
-        badge = pygame.Surface((width, total))
-        badge.fill((255, 255, 255))
-        badge.blit(qr, ((width - self.height) // 2, pad))
-        if self.caption:
-            badge.blit(label, ((width - label.get_width()) // 2,
-                               pad + self.height + pad // 2))
-        return badge
+        widths = [self.height] + [lbl.get_width() for _, lbl in blocks if lbl]
+        width = max(widths) + pad * 2
+
+        height = pad
+        for index, (_, label) in enumerate(blocks):
+            height += self.height
+            if label:
+                height += pad // 2 + label.get_height()
+            # Gap between the two steps, but not after the last one.
+            height += pad if index < len(blocks) - 1 else 0
+        height += pad
+
+        # Opaque white plate: the codes need their quiet zone and hard contrast
+        # regardless of how dark or busy the photo behind them happens to be.
+        panel = pygame.Surface((width, height))
+        panel.fill((255, 255, 255))
+
+        y = pad
+        for index, (qr, label) in enumerate(blocks):
+            panel.blit(qr, ((width - self.height) // 2, y))
+            y += self.height
+            if label:
+                y += pad // 2
+                panel.blit(label, ((width - label.get_width()) // 2, y))
+                y += label.get_height()
+            y += pad if index < len(blocks) - 1 else 0
+        return panel
+
+    # -- caching -------------------------------------------------------------
+
+    def _current_mtimes(self) -> list[float | None]:
+        stamps: list[float | None] = []
+        for path, _ in self.entries:
+            try:
+                stamps.append(path.stat().st_mtime)
+            except OSError:
+                stamps.append(None)
+        return stamps
 
     def changed(self) -> bool:
-        """True if the QR file has been rewritten since we last composed it.
+        """True if either PNG has been rewritten since the plate was built.
 
         Checked every poll, not just when something else redraws: the booth can
-        sit idle for far longer than a rotation interval, and a stale QR on
-        screen is worse than no QR -- a guest scans a passphrase that has aged
-        out of the ring and simply cannot connect, with nothing to explain why.
+        sit idle for far longer than a rotation interval, and a stale join QR is
+        worse than none -- a guest scans a passphrase that has aged out of the
+        ring and simply cannot connect, with nothing to explain why.
         """
-        try:
-            return self.path.stat().st_mtime != self._mtime
-        except OSError:
-            # File gone (or not written yet). Only a change if we were showing
-            # something, so a missing QR does not force a redraw every poll.
-            return self._badge is not None
+        return self._current_mtimes() != self._mtimes
 
     def surface(self) -> pygame.Surface | None:
-        """Current badge, rebuilt only when the QR file changes."""
-        try:
-            mtime = self.path.stat().st_mtime
-        except OSError:
-            self._badge = None              # no QR yet; show the photo alone
-            self._mtime = None
-            return None
-        if mtime != self._mtime:
-            self._badge = self._compose()
-            self._mtime = mtime
-        return self._badge
+        """Current plate, rebuilt only when one of the PNGs changes."""
+        stamps = self._current_mtimes()
+        if stamps != self._mtimes:
+            self._mtimes = stamps
+            self._panel = self._compose()
+        return self._panel
 
     def blit_onto(self, screen: pygame.Surface, margin: int = 24) -> None:
-        badge = self.surface()
-        if badge is None:
+        panel = self.surface()
+        if panel is None:
             return
-        screen.blit(badge, (screen.get_width() - badge.get_width() - margin,
-                            screen.get_height() - badge.get_height() - margin))
+        screen.blit(panel, (screen.get_width() - panel.get_width() - margin,
+                            screen.get_height() - panel.get_height() - margin))
 
 
 _FONT_CACHE: dict[int, pygame.font.Font] = {}
@@ -329,7 +369,7 @@ def _font(size: int) -> pygame.font.Font:
 
 
 def draw_overlay(screen: pygame.Surface, kind: str, value: str,
-                 badge: "QrBadge | None" = None) -> None:
+                 badge: "BadgePanel | None" = None) -> None:
     """Draw a countdown digit or a short message, centred on black."""
     screen.fill(BACKGROUND)
     height = screen.get_height()
@@ -347,7 +387,7 @@ def draw_overlay(screen: pygame.Surface, kind: str, value: str,
 
 
 def draw(screen: pygame.Surface, surface: pygame.Surface | None,
-         message: str | None = None, badge: "QrBadge | None" = None) -> None:
+         message: str | None = None, badge: "BadgePanel | None" = None) -> None:
     screen.fill(BACKGROUND)
     if surface is not None:
         screen.blit(surface, surface.get_rect(center=screen.get_rect().center))
@@ -379,6 +419,15 @@ def parse_args() -> argparse.Namespace:
                         help=f"QR size in pixels (default: {DEFAULT_QR_HEIGHT})")
     parser.add_argument("--qr-caption", default=DEFAULT_QR_CAPTION,
                         help="text under the QR (empty string for none)")
+    parser.add_argument("--portal-qr", type=Path,
+                        default=DEFAULT_PORTAL_QR_PATH, metavar="PNG",
+                        help=f"portal-URL QR, written at AP bring-up; opens "
+                             f"the gallery directly "
+                             f"(default: {DEFAULT_PORTAL_QR_PATH})")
+    parser.add_argument("--no-portal-qr", action="store_true",
+                        help="do not overlay the portal QR")
+    parser.add_argument("--portal-qr-caption", default=DEFAULT_PORTAL_QR_CAPTION,
+                        help="text under the portal QR (empty string for none)")
     return parser.parse_args()
 
 
@@ -412,17 +461,27 @@ def main() -> int:
     screen_size = screen.get_size()
     clock = pygame.time.Clock()
     commands = CommandReader(sys.stdin)
-    badge = None if args.no_qr else QrBadge(args.qr, args.qr_height,
-                                            args.qr_caption)
-    if badge is not None and not args.qr.exists():
-        print(f"QR not found at {args.qr} -- the overlay will appear as soon "
-              f"as the rotator writes it", file=sys.stderr)
+    # Both codes at args.qr_height, on one plate: they are two steps of one
+    # instruction, so they are sized and framed alike.
+    entries = []
+    if not args.no_qr:
+        entries.append((args.qr, args.qr_caption))
+        if not args.qr.exists():
+            print(f"QR not found at {args.qr} -- the overlay will appear as "
+                  f"soon as the rotator writes it", file=sys.stderr)
+    if not args.no_portal_qr:
+        entries.append((args.portal_qr, args.portal_qr_caption))
+        if not args.portal_qr.exists():
+            print(f"Portal QR not found at {args.portal_qr} -- it is written "
+                  f"when the AP starts (main.py, not display.py alone)",
+                  file=sys.stderr)
+    badge = BadgePanel(entries, args.qr_height) if entries else None
     shown: Path | None = None
     surface: pygame.Surface | None = None
     overlay: tuple[str, str] | None = None
     next_poll = 0.0
 
-    draw(screen, None, "Waiting for the first photo...", badge)
+    draw(screen, None, "Warte auf das erste Foto...", badge)
 
     running = True
     while running and not _stop_requested:
@@ -444,7 +503,7 @@ def main() -> int:
                 overlay = ("message", rest.strip())
             elif verb == "CLEAR":
                 overlay = None
-                draw(screen, surface, "Waiting for the first photo..."
+                draw(screen, surface, "Warte auf das erste Foto..."
                      if surface is None else None, badge)
             elif verb == "QUIT":
                 # Commanded shutdown. Deterministic, unlike SIGTERM: SDL
@@ -483,7 +542,7 @@ def main() -> int:
                     draw_overlay(screen, *overlay, badge=badge)
                 else:
                     draw(screen, surface, badge=badge,
-                         message=None if surface else "Waiting for the first photo...")
+                         message=None if surface else "Warte auf das erste Foto...")
                 print("QR updated (passphrase rotated)", file=sys.stderr)
 
         clock.tick(30)

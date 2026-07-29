@@ -96,6 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
     screen.add_argument("--qr-height", type=int, metavar="PX",
                         help="QR size in pixels")
     screen.add_argument("--qr-caption", metavar="TEXT", help="text under the QR")
+    screen.add_argument("--portal-qr", metavar="PNG",
+                        help="portal-URL QR to overlay; opens the gallery "
+                             "directly, without waiting for the captive sheet")
+    screen.add_argument("--no-portal-qr", action="store_true",
+                        help="do not overlay the portal QR")
+    screen.add_argument("--portal-qr-caption", metavar="TEXT",
+                        help="text under the portal QR")
 
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
@@ -139,6 +146,8 @@ def to_booth_args(args) -> argparse.Namespace:
         display=not args.no_display,
         qr=args.qr, no_qr=args.no_qr,
         qr_height=args.qr_height, qr_caption=args.qr_caption,
+        portal_qr=args.portal_qr, no_portal_qr=args.no_portal_qr,
+        portal_qr_caption=args.portal_qr_caption,
         gpio_pin=args.gpio_pin, no_gpio=args.no_gpio,
         bounce_time=args.bounce_time,
         keepalive_interval=args.keepalive_interval,

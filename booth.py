@@ -94,6 +94,12 @@ def parse_args() -> argparse.Namespace:
                         help="QR size in pixels")
     parser.add_argument("--qr-caption", metavar="TEXT",
                         help="text under the QR (empty string for none)")
+    parser.add_argument("--portal-qr", metavar="PNG",
+                        help="portal-URL QR to overlay (see display.py --help)")
+    parser.add_argument("--no-portal-qr", action="store_true",
+                        help="do not overlay the portal QR")
+    parser.add_argument("--portal-qr-caption", metavar="TEXT",
+                        help="text under the portal QR (empty string for none)")
     parser.add_argument("--gpio-pin", type=int, default=DEFAULT_BUTTON_PIN,
                         metavar="N",
                         help=f"BCM pin for the trigger button "
@@ -126,7 +132,7 @@ def shoot(camera: Camera, countdown_s: float = 0.0, notify=None) -> bool:
 
     countdown(countdown_s, tick=tick)
     print("Capturing...")
-    notify("MESSAGE Capturing...")
+    notify("MESSAGE Aufnahme...")
     try:
         for path in camera.capture():
             print(f"  -> {path}")
@@ -147,6 +153,12 @@ def viewer_options(args) -> list[str]:
         options += ["--qr-height", str(args.qr_height)]
     if args.qr_caption is not None:
         options += ["--qr-caption", args.qr_caption]
+    if args.no_portal_qr:
+        options.append("--no-portal-qr")
+    if args.portal_qr:
+        options += ["--portal-qr", args.portal_qr]
+    if args.portal_qr_caption is not None:
+        options += ["--portal-qr-caption", args.portal_qr_caption]
     return options
 
 

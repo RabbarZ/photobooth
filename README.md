@@ -250,8 +250,23 @@ gpiomon -b pull-up --banner GPIO17
   to break down the oxide film that forms on them, which reads as presses that
   intermittently do nothing. The same external 10k pull-up fixes this (~330 uA);
   1k (~3.3 mA) if dropouts persist. Gold-plated blocks avoid it entirely.
-- **Always debounce.** Large mechanical buttons bounce badly; pass
-  `bounce_time=0.1`.
+- **Always debounce — but `bounce_time` means something different on a Pi 5.**
+  This advice used to read "pass `bounce_time=0.1`", which was correct on the
+  Pi 3 and is wrong here.
+
+  On the Pi 3, gpiozero used the RPi.GPIO backend, where `bounce_time` is a
+  **lockout**: the first edge fires immediately, further edges are ignored for
+  that long. The Pi 5 has no RPi.GPIO support, so gpiozero falls back to
+  `LGPIOFactory`, which implements it with `lgpio.gpio_set_debounce_micros` —
+  *"an alert will only be issued if the edge has been stable for at least
+  debounce microseconds"*. That is a **minimum hold time**, so 0.1 silently
+  dropped every press shorter than 100 ms and a quick tap is only 40-80 ms.
+  Same value, same library, opposite behaviour.
+
+  The default is now **25 ms**: past real contact bounce (a microswitch settles
+  in under 10 ms, a large industrial block in ~20 ms) while leaving the
+  quickest deliberate tap well inside the window. Raising `--bounce-time`
+  lengthens the press the booth demands, one for one.
 - A 330R-1k resistor in series with the GPIO leg limits current if the pin is
   ever misconfigured as an output — cheap insurance for public hardware.
 

@@ -141,8 +141,26 @@ class AccessPoint:
 
         if guests:
             _systemctl("restart", *GUEST_UNITS)
+        self.write_portal_qr()
         log.info('AP "%s" up on %s', self.ssid, self.address)
         return True
+
+    def write_portal_qr(self) -> None:
+        """Draw the QR that opens the gallery directly.
+
+        Written here rather than by the rotation timer because the URL is
+        fixed: it only depends on the interface address, which is settled by
+        the time the AP is up. Never fatal -- a missing portal QR costs one
+        convenience, an aborted AP costs the whole booth.
+        """
+        path = self.config["password"].get("portal_qr_path")
+        if not path:
+            return
+        try:
+            import wifiqr
+            wifiqr.write_url_qr(Path(path), f"http://{self.address}/")
+        except Exception as err:
+            log.warning("could not write the portal QR to %s: %s", path, err)
 
     def stop(self, release: bool = False) -> None:
         """Stop the AP. `release` also hands the interface back to NM."""

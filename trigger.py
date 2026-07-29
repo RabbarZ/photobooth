@@ -16,7 +16,24 @@ from enum import Enum, auto
 log = logging.getLogger(__name__)
 
 DEFAULT_BUTTON_PIN = 17
-DEFAULT_BOUNCE_S = 0.1
+
+# 25 ms, and this number changed meaning when the booth moved from a Pi 3 to a
+# Pi 5. On the Pi 3, gpiozero used the RPi.GPIO backend, where bounce_time is a
+# lockout: the first edge fires immediately and further edges are ignored for
+# that long, so 0.1 debounced a stiff button without ever delaying a press.
+#
+# The Pi 5 has no RPi.GPIO support, so gpiozero falls back to LGPIOFactory,
+# which implements bounce_time with lgpio.gpio_set_debounce_micros -- "an alert
+# is only issued if the edge has been stable for at least this long". That
+# inverts it into a *minimum hold time*: at 0.1 every press shorter than 100 ms
+# was discarded outright, and a quick tap is 40-80 ms, so the button had to be
+# held to register at all. Same value, same library, opposite behaviour.
+#
+# 25 ms clears real contact bounce (a microswitch settles in under 10 ms, a big
+# industrial block in ~20 ms) while leaving the quickest deliberate tap well
+# inside the window. Raising it lengthens the press the booth demands, one for
+# one, so raise it only for genuine double-triggers.
+DEFAULT_BOUNCE_S = 0.025
 
 
 class Event(Enum):

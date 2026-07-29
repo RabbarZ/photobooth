@@ -44,6 +44,12 @@ password:
   psk_file: /etc/hostapd/photobooth.psk
   # Fixed paths so the photobooth display can just show the file.
   qr_path: /var/lib/photobooth/wifi-qr.png
+  # Second QR shown beside the join code: it encodes the portal URL rather
+  # than credentials, so a guest already on the Wi-Fi can reach the gallery
+  # without waiting for the captive sheet. Written once at AP bring-up -- the
+  # URL only depends on the interface address, so unlike the join QR it never
+  # rotates.
+  portal_qr_path: /var/lib/photobooth/portal-qr.png
   password_path: /var/lib/photobooth/current-password.txt
 
 session:

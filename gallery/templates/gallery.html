@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,20 +10,8 @@
 
 <header>
   <h1>Photobooth</h1>
-  <p class="sub">Tap a photo to save it. {{ photos|length }} photo{{ '' if photos|length == 1 else 's' }} available.</p>
+  <p class="sub">Zum Speichern auf ein Foto tippen. {{ photos|length }} Foto{{ '' if photos|length == 1 else 's' }} verf&uuml;gbar.</p>
 </header>
-
-{% if zip_file %}
-<section class="bulk">
-  <button id="download-all" data-url="/all-photos.zip">
-    Download all &middot; {{ zip_file.megabytes }} MB
-  </button>
-  <p class="note" id="bulk-note">
-    Large download &mdash; keep this page open if you can. You have
-    {{ grace_minutes }} minutes to finish once it starts.
-  </p>
-</section>
-{% endif %}
 
 {% if photos %}
 <main class="grid">
@@ -34,10 +22,10 @@
   {% endfor %}
 </main>
 {% else %}
-<main class="empty"><p>No photos yet. Smile for the camera!</p></main>
+<main class="empty"><p>Noch keine Fotos. Bitte l&auml;cheln!</p></main>
 {% endif %}
 
-<footer><p>Connected to the photobooth. No internet access here.</p></footer>
+<footer><p>Mit der Fotobox verbunden. Hier gibt es kein Internet.</p></footer>
 
 <script>
 // Heartbeat: resets the server's idle timer while this page is open. Errors are
@@ -52,28 +40,6 @@ setInterval(beat, BEAT_MS);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) beat();
 });
-
-// Bulk download: ask the server for a grace window *before* navigating, so the
-// transfer survives the page being backgrounded or the screen locking.
-const button = document.getElementById('download-all');
-if (button) {
-  button.addEventListener('click', async () => {
-    button.disabled = true;
-    const note = document.getElementById('bulk-note');
-    note.textContent = 'Preparing…';
-    let url = button.dataset.url;
-    try {
-      const res = await fetch('/api/download-all', {method: 'POST', cache: 'no-store'});
-      const data = await res.json();
-      if (data.url) url = data.url;
-    } catch (err) {
-      // Grace registration failed; still let them try the download.
-    }
-    note.textContent = 'Download started. It may take several minutes.';
-    button.disabled = false;
-    window.location = url;
-  });
-}
 </script>
 </body>
 </html>

@@ -1,21 +1,21 @@
 """Live report of what each guest device is doing, for the booth console.
 
-Exists because captive-portal problems are invisible from the Pi: a phone can
-associate, get a lease, and still never show its login sheet, and nothing in
-the normal logs distinguishes "the sheet opened" from "the guest gave up and
-typed the address by hand".
+Exists because a guest's progress is invisible from the Pi: a phone can
+associate and get a lease and still never reach the gallery, and nothing in
+the normal logs distinguishes "they are browsing photos" from "they joined and
+walked away".
 
 This watches three sources and prints one line per event:
 
   * hostapd_cli list_sta   -- who is associated
   * dnsmasq.leases         -- who has an address, and their hostname
-  * the portal's own log   -- which probes each device made, and what it got
+  * the gallery's own log  -- who opened the page, and who is downloading
 
-The probe requests are the interesting part. An iOS device that is detecting
-the portal correctly fetches /hotspot-detect.html *by itself*, with a
-CaptiveNetworkSupport user agent, within a second or two of joining. If that
-never appears, the phone is not probing -- which points at DHCP option 114 or
-the device's own settings, not at anything nginx is serving.
+There is no captive portal, so nothing opens on a guest's phone by itself.
+The two steps to watch for are therefore independent: joining the Wi-Fi (the
+first QR) and opening the gallery (the second). A device that associates but
+never appears in the gallery log has not scanned the second code -- which
+points at the booth screen, not at anything the Pi is serving.
 """
 
 from __future__ import annotations
@@ -28,11 +28,13 @@ from datetime import datetime
 
 import pbcommon
 
-# Who made the request, inferred from the user agent.
+# Which device made the request, inferred from the user agent. Ordered: the
+# system-service agents are checked before the generic ones, because an OS
+# connectivity check still fires on this network -- it simply fails now, and
+# labelling it separately keeps it from reading as a guest opening the page.
 AGENTS = [
-    ("iOS probe",   re.compile(r"CaptiveNetworkSupport", re.I)),
-    ("iOS sheet",   re.compile(r"iPhone|iPad", re.I)),
-    ("iOS system",  re.compile(r"CFNetwork|Darwin", re.I)),
+    ("iOS system",  re.compile(r"CaptiveNetworkSupport|CFNetwork|Darwin", re.I)),
+    ("iPhone",      re.compile(r"iPhone|iPad", re.I)),
     ("Android",     re.compile(r"Dalvik|Android", re.I)),
     ("Windows",     re.compile(r"NCSI|Microsoft", re.I)),
 ]
@@ -63,7 +65,7 @@ class ClientWatch:
         self._threads: list[threading.Thread] = []
         self._known_stations: set[str] = set()
         self._known_leases: dict[str, str] = {}
-        self._probed: set[str] = set()
+        self._opened: set[str] = set()
 
     # -- output --------------------------------------------------------------
 
@@ -83,7 +85,7 @@ class ClientWatch:
                     self._say("[+]", f"{mac} associated")
                 for mac in self._known_stations - stations:
                     self._say("[-]", f"{mac} left")
-                    self._probed.discard(mac)
+                    self._opened.discard(mac)
                 self._known_stations = stations
 
                 for ip, mac, name in self._leases():
@@ -128,25 +130,14 @@ class ClientWatch:
                 who = _classify(match["agent"])
                 path, status = match["path"], match["status"]
 
-                if path == "/captive-api":
-                    # RFC 8908: this is the signal that actually opens the
-                    # sheet on iOS 14+/Android 11+.
-                    self._probed.add(who)
-                    self._say("[iOS]", f"captive-api -> {status}  "
-                                       f"<< RFC 8908 query, sheet should open")
-                elif who == "iOS probe" and "hotspot-detect" in path:
-                    self._probed.add(who)
-                    self._say("[iOS]", f"probe {path} -> {status} "
-                                       f"({match['size']}B)  << legacy probe")
-                elif who == "iOS probe":
-                    # The CNA fetching a page is NOT detection -- it means the
-                    # sheet is already open, or the user navigated there.
-                    self._say("[iOS]", f"CNA fetched {path} -> {status} "
-                                       f"(not a detection probe)")
-                elif who == "iOS sheet":
-                    self._say("[iOS]", f"login sheet opened {path} -> {status}")
-                elif who in ("Android", "Windows"):
-                    self._say(f"[{who[:3]}]", f"probe {path} -> {status}")
+                if path == "/":
+                    # The event worth seeing now: a guest scanned the gallery
+                    # QR and the page loaded.
+                    self._opened.add(who)
+                    self._say("[web]", f"{who} opened the gallery -> {status} "
+                                       f"({match['size']}B)")
+                elif path.startswith(("/photos/", "/all-photos.zip")):
+                    self._say("[web]", f"{who} downloading {path} -> {status}")
                 elif self.verbose:
                     self._say("[web]", f"{who} {path} -> {status}")
         finally:
@@ -171,46 +162,55 @@ class ClientWatch:
             return
         for mac, ip in self._known_leases.items():
             print(f"    {mac}  {ip}")
-        if self._probed:
-            print("  Captive detection was observed for: "
-                  + ", ".join(sorted(self._probed)))
+        if self._opened:
+            print("  The gallery was opened by: " + ", ".join(sorted(self._opened)))
         else:
-            print("  No captive-api query or legacy probe was seen.")
-            print("  If an iPhone joined and its sheet never appeared, that")
-            print("  points at DHCP option 114 or iCloud Private Relay --")
-            print("  not at nginx, which only answers probes that arrive.")
+            print("  Nobody opened the gallery.")
+            print("  There is no captive portal, so nothing opens by itself --")
+            print("  a guest has to scan the second QR on the booth screen.")
+            print("  Check that it is on screen and encodes the right address:")
+            print("    python3 wifiqr.py --url http://<ip>/ --show")
 
 
 def preflight(config: dict) -> list[str]:
-    """Cheap checks for the things that silently break captive detection."""
+    """Cheap checks for the things that silently break a guest's visit.
+
+    The captive-portal checks that used to live here are gone with the portal
+    itself: option 114 and the `local=/#/` AAAA workaround existed only to make
+    a sign-in sheet appear, and their absence is now correct rather than a
+    fault to report.
+    """
     problems = []
 
     conf = "/etc/dnsmasq.d/photobooth.conf"
     try:
         with open(conf) as handle:
-            text = handle.read()
+            # Directives only. The template documents the removed captive
+            # options by name in its comments, and matching those reported the
+            # portal as still present on a config that had none.
+            text = "\n".join(line for line in handle.read().splitlines()
+                             if not line.lstrip().startswith("#"))
     except OSError:
         return [f"{conf} missing -- run setup.sh"]
 
-    # Two independent ways option 114 silently fails, both invisible in the
-    # dnsmasq log:
-    #
-    #   1. Unquoted -- dnsmasq encodes the wrong option type and iOS discards it.
-    #   2. Plain dhcp-option -- only sent if the client listed 114 in its
-    #      Parameter Request List (option 55), and iOS does not always ask.
-    #      -force sends it unconditionally.
-    if 'dhcp-option-force=114,"' not in text:
-        hint = ('it is not sent with -force, so it only reaches clients that '
-                'explicitly request it'
-                if "114" in text else "it is missing entirely")
+    # The installed file predating the portal removal is the likely surprise:
+    # it still hijacks DNS and still advertises a portal, so phones open a
+    # sign-in sheet that nothing serves any more.
+    if "address=/#/" in text:
         problems.append(
-            f'DHCP option 114 will not reach iOS: {hint}. It is the primary '
-            'captive signal on iOS 14+. Expected: '
-            'dhcp-option-force=114,"http://<ip>/captive-api"')
-    if "local=/#/" not in text:
+            "dnsmasq still resolves every name to the Pi (address=/#/), left "
+            "over from the captive portal. Re-render the configs: "
+            "sudo python3 render_configs.py --install")
+    if "114" in text:
         problems.append(
-            "dnsmasq will answer AAAA with REFUSED, which reads to iOS as a "
-            "broken resolver rather than a captive network. Add local=/#/")
+            "dnsmasq still advertises a captive-portal URL (DHCP option 114), "
+            "so phones will look for a sign-in page that no longer exists. "
+            "Re-render the configs: sudo python3 render_configs.py --install")
+    if not any(f"address=/{name}/" in text
+               for name in ("photobooth", "photobooth.local")):
+        problems.append(
+            "the photobooth hostname is not resolvable -- guests can still use "
+            "the IP, but the QR is the only way in. Re-render the configs")
 
     ok, out = pbcommon.hostapd_cli(config, "ping")
     if not ok or "PONG" not in out:

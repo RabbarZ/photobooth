@@ -1,7 +1,9 @@
-# Photobooth gallery — Pi-hosted Wi-Fi + captive-portal gallery
+# Photobooth gallery — Pi-hosted Wi-Fi + photo gallery
 
-Guests scan a QR code, join the Pi's Wi-Fi, and a captive portal opens showing
-the gallery. No internet, no sign-in button, no accounts.
+Guests scan one QR to join the Pi's Wi-Fi and a second to open the gallery.
+No sign-in, no accounts. The network has no internet: iOS and the rest are told
+it is fine so they do not nag, while Android is told it is a captive portal so
+the gallery opens by itself.
 
 Target: **Raspberry Pi 3 Model B v1.2** (BCM2837, 1 GB RAM, onboard BCM43438 —
 2.4 GHz only, 802.11n, single antenna). Every design choice below is driven by
@@ -93,62 +95,111 @@ silently failed to get a DHCP lease and dropped off. hostapd and dnsmasq are
 now `BindsTo=photobooth-ap`, which makes that half-up state impossible whenever
 the AP is started — by `main.py`, by `accesspoint.py start`, or manually.
 
-## The captive portal is the gallery
+## Two QR codes; a captive portal on Android only
 
-There is no "connect to internet" button and **no client is ever marked
-authenticated**. That is load-bearing, not an oversight.
+Guests take two steps, each one a code on the booth screen:
 
-- dnsmasq resolves every name to the Pi (`address=/#/10.42.0.1`).
-- nginx's `default_server` returns `302` to the portal for anything not
-  addressed to us — which is what the OS probes hit
-  (`captive.apple.com`, `connectivitycheck.gstatic.com`,
-  `www.msftconnecttest.com`, `detectportal.mozilla.org`, …).
-- Each OS wants a specific success response (`204`, `Success`,
-  `Microsoft Connect Test`). None of them get it.
+1. **Join the Wi-Fi** — a `WIFI:` payload carrying SSID and the current
+   rotated passphrase. Written by `rotate_password.py` on every rotation.
+2. **Open the gallery** — a plain `http://10.42.0.1/` URL. Written once at AP
+   bring-up by `accesspoint.write_portal_qr()`; it depends only on the
+   interface address, so unlike the join QR it never rotates.
 
-So the device stays in "login required" and **the OS re-pops the portal when the
-phone wakes**. That is the intended re-entry path: a guest who takes a second
-photo gets the gallery again without doing anything. All responses are
-`Cache-Control: no-store`, because a single cached `204` would end this.
+Scanning a URL with the Camera app opens it in the real browser, which is the
+point: the gallery arrives in Safari or Chrome, where downloading and saving
+behave normally.
 
-DHCP option 114 (RFC 8910) advertises the portal URL, which makes it open more
-reliably on recent iOS/Android. It only says *where* the portal is — it does not
-mark the device authenticated.
+**The general-purpose captive portal is gone** — what remains is one narrow,
+Android-only case built from the connectivity checks below, not from the old
+machinery. Removing the original meant taking out four separate mechanisms,
+none of which should come back piecemeal:
 
-### Making the sheet open on iOS
+| Removed | What it did |
+| --- | --- |
+| `address=/#/10.42.0.1` | resolved *every* name to the Pi, so any URL landed on the portal |
+| `dhcp-option-force=114` | RFC 8910 URI — the primary signal that opens the sheet on iOS 14+ |
+| `/captive-api` | RFC 8908 JSON endpoint answering `{"captive": true}` |
+| nginx `default_server` 302 | answered the OS probes so no device concluded it had internet |
 
-iOS is fussier than Android, and two things stopped it auto-opening:
+The last row is worth reading twice: the probes are answered again now, but
+per platform — success for iOS and the rest, a redirect for Android alone. See
+below. Restoring a blanket 302 would bring the sign-in sheet back on iPhones.
 
-**AAAA queries were answered `REFUSED`.** The `address=/#/` wildcard only
-covers IPv4, so IPv6 lookups fell through and dnsmasq refused them. A REFUSED
-reply reads as "this resolver is broken" rather than "this name has no IPv6",
-which leaves iOS's probe inconclusive instead of concluding it is captive.
-`local=/#/` fixes it — NOERROR with an empty answer, so the client drops to
-IPv4 immediately.
+Also gone: `welcome.html` (the stripped-down page the iOS Captive Network
+Assistant got instead of the thumbnail-heavy gallery), the `is_captive_browser()`
+User-Agent sniffing, the `PROBE_PATHS` routes, and the `local=/#/` AAAA
+workaround that existed only so iOS would reach a captive verdict rather than
+deciding the resolver was broken.
 
-> `filter-AAAA` does **not** work here: it only applies to queries dnsmasq
-> forwards upstream, and ours are all answered locally. Mapping AAAA to `::`
-> is worse still — clients try to connect to it and stall.
+**Correction to what this section first said.** It claimed a phone would
+correctly conclude it had no internet and that this was fine. In practice iOS
+does not just note it quietly — it puts up *"Stay connected / Use mobile
+data"* over whatever the guest is doing, and guests answer it wrongly and drop
+off the Wi-Fi mid-download. So the probes are now answered after all, in the
+opposite direction from the old portal.
 
-**The gallery is too heavy for the Captive Network Assistant.** iOS opens
-portals in a restricted mini-browser that abandons a slow page. The full
-gallery pulls ~45 subresources (one thumbnail per photo) over a saturated
-2.4 GHz link. Requests carrying `CaptiveNetworkSupport` in the User-Agent now
-get `welcome.html` instead: a single 1.5 KB response with inline CSS and **no
-subresources at all**, plus a button into the real gallery. The CNA cannot save
-files anyway, so sending guests to Safari is where downloading has to happen.
+### Connectivity checks, answered per platform
 
-| Client | Page | Size | Subresources |
+Every OS fetches a known URL right after joining and decides from the reply
+whether the network works. Those hostnames resolve to the Pi again — but by
+name, not by wildcard — and nginx answers each family differently:
+
+| OS | Probe | Reply | Result |
 | --- | --- | --- | --- |
-| iOS CNA | `welcome.html` | 1.5 KB | 0 |
-| Safari / Chrome | `gallery.html` | 11.5 KB | ~45 |
+| iOS / macOS | `captive.apple.com/hotspot-detect.html` | `200`, `<HTML>…<BODY>Success</BODY></HTML>` | no prompt |
+| Windows | `www.msftconnecttest.com/connecttest.txt` | `200`, `Microsoft Connect Test` | no prompt |
+| Firefox | `detectportal.mozilla.org/success.txt` | `200`, `success` | no prompt |
+| Ubuntu | `connectivity-check.ubuntu.com/canonical.html` | `200`, `NetworkManager is online` | no prompt |
+| **Android** | `connectivitycheck.gstatic.com/generate_204` | **`302` → the gallery** | **captive portal** |
+
+The bodies are exact, not stylistic: Apple checks for that precise document and
+Windows compares byte for byte. Served straight from nginx, never proxied —
+phones re-probe every few tens of seconds and that has no business waking
+gunicorn.
+
+**Android is answered the opposite way on purpose.** It trusts the network only
+on exactly a `204`; anything else makes it declare a captive portal and offer
+*"Sign in to network"*, which opens the target in its own login browser — so
+Android guests get the gallery pushed at them, while iOS guests are left alone
+and use the second QR.
+
+The two are inseparable from the hostnames: the same success reply that quiets
+iOS would suppress Android's portal, and the redirect that gives Android its
+portal would make iOS nag. That is why the probe names are split across two
+nginx server blocks rather than sharing one.
+
+Two things are load-bearing and easy to break:
+
+- **`www.google.com` is deliberately not in dnsmasq.** Android runs an HTTPS
+  probe against it to tell a portal from a broken network. It has to *fail*:
+  failing HTTPS plus a redirecting HTTP probe is exactly the combination read
+  as "captive portal". Resolving it here would undo this.
+- **Do not re-add DHCP option 114** to give Android a tidier signal. Option 114
+  goes to every client, so iOS would pick it up too and the sign-in sheet would
+  be back on iPhones.
+
+Only the probe hostnames are hijacked, and Apple's are pinned to
+`captive.apple.com` and `www.apple.com` specifically. A bare
+`address=/apple.com/` would catch push, iCloud and the App Store too, so
+instead of failing cleanly those would get a stray `204` and misbehave.
+
+> **The trade: while a guest is on this Wi-Fi they have no internet and their
+> phone no longer warns them.** Nothing else resolves, so other apps and sites
+> simply fail rather than falling back to mobile data. That is the price of
+> silencing the prompt, and it is why the session limits matter — a guest is
+> kicked back to normal connectivity within `hard_limit_minutes`.
+
+`dhcp-option:router` is deliberately **not** sent either. Advertising a default
+gateway that routes nowhere makes a phone treat this as its internet path and
+stall on every lookup; without one the OS keeps using mobile data for
+everything else while `10.42.0.1` stays reachable.
 
 ## Sessions: two timers, no blocklist
 
 | Limit | Default | Trigger |
 | --- | --- | --- |
 | Hard | 30 min | wall clock since first association |
-| Soft | 5 min | no portal request (page load or heartbeat) |
+| Soft | 5 min | no gallery request (page load or heartbeat) |
 | Bulk grace | 10 min | suppresses the soft kick during a download |
 
 Kicks are `hostapd_cli deauthenticate <MAC>`. **There is no MAC blocklist** —
@@ -317,13 +368,24 @@ are bound to it.
 ## Diagnostics
 
 ```bash
-# Portal reachable? (works before activation, over your normal network)
+# Gallery reachable? (works before activation, over your normal network)
 curl -s -H 'Host: 10.42.0.1' http://127.0.0.1/ | head -20
 curl -s -H 'Host: 10.42.0.1' http://127.0.0.1/api/status
 
-# Probe handling — every one of these must be a 302, never 204/200
-curl -sI -H 'Host: connectivitycheck.gstatic.com' http://127.0.0.1/generate_204
-curl -sI -H 'Host: captive.apple.com' http://127.0.0.1/hotspot-detect.html
+# The two QRs actually encode what they should
+python3 wifiqr.py --show                      # WIFI: join payload
+python3 wifiqr.py --url http://10.42.0.1/ --show
+ls -l /var/lib/photobooth/wifi-qr.png /var/lib/photobooth/portal-qr.png
+
+# No captive machinery left: neither line should match
+grep -E 'address=/#/|option-force=114' /etc/dnsmasq.d/photobooth.conf
+
+# iOS and friends must see success — this is what stops the "Stay connected?" prompt
+curl -s  -H 'Host: captive.apple.com' http://127.0.0.1/hotspot-detect.html
+curl -s  -H 'Host: www.msftconnecttest.com' http://127.0.0.1/connecttest.txt
+
+# Android must see a redirect, NEVER a 204 — that is what opens its portal
+curl -sI -H 'Host: connectivitycheck.gstatic.com' http://127.0.0.1/generate_204 | head -2
 
 # Live
 hostapd_cli -i wlan0 list_sta
@@ -337,9 +399,9 @@ cat /var/lib/photobooth/current-password.txt
 ../main.py             THE entry point: AP up -> booth loop -> AP down
 config.yaml            all tunables — the single source of truth
 accesspoint.py         AP lifecycle: interface, hostapd, dnsmasq (was 3 .sh files)
-wifiqr.py              WIFI: payload + join-QR rendering
+wifiqr.py              WIFI: join payload + URL QR rendering (both codes)
 pbcommon.py            config (+ runtime overrides), IP->MAC, state, hostapd_cli
-portal.py              Flask: gallery, heartbeat, probes, grace registration
+portal.py              Flask: gallery, heartbeat, grace registration
 session_manager.py     the two timers -> deauth
 rotate_password.py     passphrase rotation, delegates the QR to wifiqr.py
 ingest.py              thumbnails + prebuilt store-only zip
