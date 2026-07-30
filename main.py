@@ -98,6 +98,10 @@ def build_parser() -> argparse.ArgumentParser:
     screen.add_argument("--qr-caption-size", type=int, metavar="PX",
                         help="caption text size in pixels")
     screen.add_argument("--qr-caption", metavar="TEXT", help="text under the QR")
+    screen.add_argument("--capture-message", metavar="TEXT",
+                        default=booth.CAPTURE_MESSAGE,
+                        help="shown while the shutter is working "
+                             "(empty string for none)")
     screen.add_argument("--camera-hint", metavar="TEXT",
                         help="look-at-the-lens line under the countdown "
                              "(empty string for none)")
@@ -141,6 +145,7 @@ def to_booth_args(args) -> argparse.Namespace:
         delete_after_download=args.delete_after_download,
         mock_camera=args.mock_camera,
         display=not args.no_display,
+        capture_message=args.capture_message,
         qr=args.qr, no_qr=args.no_qr,
         qr_height=args.qr_height, qr_gap=args.qr_gap,
         qr_caption_size=args.qr_caption_size, qr_caption=args.qr_caption,

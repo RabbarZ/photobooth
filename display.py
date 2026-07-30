@@ -74,7 +74,7 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 # systems beyond the filename.
 DEFAULT_QR_PATH = Path("/var/lib/photobooth/wifi-qr.png")
 DEFAULT_QR_HEIGHT = 260
-DEFAULT_QR_CAPTION = "1. Mit WLAN verbinden"
+DEFAULT_QR_CAPTION = "1. WLAN verbinde"
 
 # Written once at AP bring-up (gallery/accesspoint.py), never rotated: it
 # encodes the portal URL, not credentials. Scanning it opens the gallery
@@ -82,7 +82,7 @@ DEFAULT_QR_CAPTION = "1. Mit WLAN verbinden"
 # and a smaller second code read as optional when it is not -- but it is
 # useless before the phone is on the network, hence "2.".
 DEFAULT_PORTAL_QR_PATH = Path("/var/lib/photobooth/portal-qr.png")
-DEFAULT_PORTAL_QR_CAPTION = "2. Galerie öffnen"
+DEFAULT_PORTAL_QR_CAPTION = "2. Galerie ufmache"
 
 POLL_INTERVAL_S = 0.3
 BACKGROUND = (0, 0, 0)
@@ -114,14 +114,14 @@ DEFAULT_QR_GAP = 200
 # at which a phone can actually resolve the code beneath it. Absolute rather
 # than derived from the QR height, so resizing the codes cannot quietly shrink
 # the words back into illegibility.
-DEFAULT_QR_CAPTION_SIZE = 36
+DEFAULT_QR_CAPTION_SIZE = 42
 
 # Shown under the countdown. The lens sits below the display, so the moment a
 # guest most needs to look away from the screen is exactly the moment they are
 # most fixed on it -- and the resulting photos are all of people looking
 # slightly too high. The arrows do the work here: they point at the camera
 # whether or not the words get read inside the three seconds available.
-DEFAULT_CAMERA_HINT = "↓ Kamera hier unten ↓"
+DEFAULT_CAMERA_HINT = "↓ Kamera isch do unde ↓"
 DEFAULT_CAMERA_HINT_SIZE = 128
 
 # Commands accepted on stdin, one per line. booth.py sends these down the
@@ -474,19 +474,24 @@ def render_message(text: str, size: int, colour, max_width: int,
 
 def text_area(screen: pygame.Surface,
               badge: "BadgePanel | None") -> pygame.Rect:
-    """The part of the screen an overlay may use without hiding under the QRs.
+    """The region an overlay may use without hiding under the QRs.
 
     The plates are drawn last and so win every overlap; a warning nobody can
-    read because a QR is sitting on top of it is worse than no warning. The
-    stack is centred on the right edge, spanning the middle of the screen, so
-    there is no band above or below it to hand the text -- everything drawn
-    over a photo takes the column to its left instead, countdown included.
+    read because a QR is sitting on top of it is worse than no warning.
+
+    The region stays centred on the screen and is narrowed *symmetrically* --
+    losing as much on the left as the plates take on the right. Text then grows
+    outwards from the middle of the screen, where the eye already is, rather
+    than sliding off-centre by half a QR plate whenever a code is on show.
     """
     area = screen.get_rect()
     width = badge.footprint()[0] if badge is not None else 0
     if width:
-        area.width = max(area.width // 3,
-                         area.width - width - 2 * BADGE_MARGIN)
+        # Left edge of the plates. Centred content may reach neither it nor
+        # its mirror image on the far side of the screen's centre.
+        clear = area.right - BADGE_MARGIN - width
+        area.width = max(area.width // 3, 2 * (clear - area.centerx))
+        area.centerx = screen.get_rect().centerx
     return area
 
 
@@ -501,10 +506,7 @@ def draw_overlay(screen: pygame.Surface, kind: str, value: str,
     """
     screen.fill(BACKGROUND)
     height = screen.get_height()
-    # The countdown lays out in the same clear column as the messages, not on
-    # the full screen: with a hint underneath it, anything centred on the
-    # screen would have to wrap into the sliver that stays clear of the plates
-    # on both sides, and on a small screen that sliver is a few words wide.
+    # Centred on the screen; only the width is clipped back by the plates.
     area = text_area(screen, badge)
     if kind == "count":
         surface = _font(max(64, height * 2 // 3)).render(

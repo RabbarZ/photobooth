@@ -35,6 +35,11 @@ DEFAULT_COUNTDOWN_S = 3.0
 NOT_READY_MESSAGE = "Kamera nicht bereit - bitte Hinweis an der Kamera bestätigen"
 NO_CAMERA_MESSAGE = "Keine Kamera gefunden - bitte Kamera einschalten"
 
+# Shown from the moment the shutter fires until the photo lands on screen.
+# Not a failure, so it is worded as progress rather than instruction -- the
+# guest has nothing left to do at this point but wait a couple of seconds.
+CAPTURE_MESSAGE = "Bitte lache!"
+
 # How long either message stays up before the screen goes back to the last photo.
 NOT_READY_MESSAGE_S = 5.0
 
@@ -105,6 +110,10 @@ def parse_args() -> argparse.Namespace:
                              "photo from the output directory under a new name")
     parser.add_argument("--display", action="store_true",
                         help="show each photo fullscreen until the next one")
+    parser.add_argument("--capture-message", default=CAPTURE_MESSAGE,
+                        metavar="TEXT",
+                        help=f"shown while the shutter is working, empty "
+                             f"string for none (default: {CAPTURE_MESSAGE!r})")
     # Forwarded verbatim to display.py. Defaults are deliberately None here so
     # display.py stays the single place they are defined -- booth.py only
     # passes on what was explicitly asked for.
@@ -158,11 +167,13 @@ def report_not_ready(reason: str, notify,
     notify("CLEAR")
 
 
-def shoot(camera: Camera, countdown_s: float = 0.0, notify=None) -> bool:
+def shoot(camera: Camera, countdown_s: float = 0.0, notify=None,
+          capture_message: str = CAPTURE_MESSAGE) -> bool:
     """Count down, then take one photo. False if the camera needs reconnecting.
 
     `notify` mirrors the console countdown onto the screen, if a viewer is
-    attached.
+    attached. `capture_message` is what that screen says while the shutter is
+    working; empty leaves the countdown's last frame up instead.
     """
     notify = notify or (lambda _command: None)
 
@@ -172,7 +183,8 @@ def shoot(camera: Camera, countdown_s: float = 0.0, notify=None) -> bool:
 
     countdown(countdown_s, tick=tick)
     print("Capturing...")
-    notify("MESSAGE Aufnahme...")
+    if capture_message:
+        notify(f"MESSAGE {capture_message}")
 
     saved: list = []
     failure: list[CameraError] = []
@@ -382,7 +394,8 @@ def run(args) -> int:
 
     try:
         if args.once:
-            return 0 if shoot(camera, args.countdown, notify) else 1
+            return 0 if shoot(camera, args.countdown, notify,
+                              args.capture_message) else 1
 
         with Trigger(pin=None if args.no_gpio else args.gpio_pin,
                      bounce_time=args.bounce_time) as trigger:
@@ -407,7 +420,8 @@ def run(args) -> int:
                     if not connected:
                         connected = reconnect(camera)
                     if connected:
-                        succeeded = shoot(camera, args.countdown, notify)
+                        succeeded = shoot(camera, args.countdown, notify,
+                                          args.capture_message)
                     else:
                         report_not_ready("No camera to shoot with.", notify,
                                          NO_CAMERA_MESSAGE)
