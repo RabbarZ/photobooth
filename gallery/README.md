@@ -416,7 +416,8 @@ rotate_password.py     passphrase rotation, delegates the QR to wifiqr.py
 ingest.py              thumbnails + prebuilt store-only zip
 render_configs.py      config.yaml -> system files
 etc/*.tmpl             hostapd, dnsmasq, nginx, NetworkManager templates
-systemd/*.service      five units (incl. photobooth-ap, which owns the address)
+systemd/*.service      five units (photobooth-booth runs main.py at boot;
+                       photobooth-ap owns the interface address)
 setup.sh               non-disruptive install
 ```
 

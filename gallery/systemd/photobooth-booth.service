@@ -1,0 +1,57 @@
+[Unit]
+Description=Photobooth (camera + screen + guest Wi-Fi)
+Documentation=file:///home/pi/repos/photobooth/README.md
+# The booth is a Wayland client: display.py reaches the screen through labwc,
+# which lightdm starts when it autologins pi. graphical.target is reached
+# before that session actually exists, so ExecStartPre waits for the socket.
+After=graphical.target network.target
+Wants=graphical.target
+# main.py owns the whole AP lifecycle through accesspoint.py; photobooth-ap
+# does the same job for an AP with no booth behind it. Running both would give
+# one interface two owners, so starting either one stops the other.
+Conflicts=photobooth-ap.service
+# The booth is unattended and the cure is usually at the camera or the monitor.
+# Never stop retrying -- the same reason booth.py keeps listening after a run
+# of camera failures instead of exiting.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+# Root, because the AP reconfigures wlan0 and drives hostapd/dnsmasq. No
+# sandboxing for the same reason: this unit needs the radio, the DRM device,
+# the camera's USB node and the GPIO line.
+User=root
+WorkingDirectory=/home/pi/repos/photobooth
+ExecStart=/usr/bin/python3 main.py
+
+# pi's session, so SDL finds a compositor. Without these it silently falls back
+# to its offscreen driver: a viewer that looks healthy and shows nothing.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+# booth.py drops the viewer back to SUDO_UID, because a GUI client of pi's
+# compositor has no business being root. Under systemd there is no sudo to set
+# those, so supply them here -- otherwise that branch is skipped and display.py
+# runs as root against pi's socket.
+Environment=SUDO_UID=1000 SUDO_GID=1000 SUDO_USER=pi
+
+# Wait for the session rather than race it: at boot lightdm still has to log pi
+# in and start labwc. Bounded, so a boot with no monitor fails the start and
+# retries instead of hanging here forever.
+ExecStartPre=/bin/sh -c 'for _ in $(seq 60); do [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && exit 0; sleep 1; done; echo "no Wayland session at $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" >&2; exit 1'
+TimeoutStartSec=120
+
+Restart=always
+RestartSec=5
+# SIGINT, not SIGTERM: booth.py's clean shutdown hangs off KeyboardInterrupt.
+# That path disconnects the camera and hands the radio back; killed outright it
+# skips both, and an abandoned in-flight capture wedges the camera until it is
+# power-cycled.
+KillSignal=SIGINT
+# Long enough for a capture already in flight to finish downloading.
+TimeoutStopSec=60
+# Explicit, though it is also the default: trigger.py sees the EOF on /dev/null
+# and runs on the GPIO button alone rather than spinning on a readable stdin.
+StandardInput=null
+
+[Install]
+WantedBy=graphical.target

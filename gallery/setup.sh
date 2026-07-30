@@ -147,7 +147,12 @@ systemctl enable --now photobooth-portal.service photobooth-ingest.service
 # broadcasting with no DHCP server behind it.
 systemctl disable photobooth-ap.service photobooth-rotate.service \
     hostapd.service dnsmasq.service >/dev/null 2>&1 || true
-echo "  portal + ingest started and enabled; AP stack installed, started by main.py"
+# The booth itself is enabled for boot but deliberately NOT started here: it is
+# what brings the AP up, and setup.sh promises to leave wlan0 (and your SSH
+# session) alone. It comes up on the next reboot, or on demand with
+# `systemctl start photobooth-booth`.
+systemctl enable photobooth-booth.service >/dev/null
+echo "  portal + ingest started and enabled; booth enabled for boot; AP stack started by main.py"
 
 say "Done"
 cat <<EOF
