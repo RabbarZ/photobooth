@@ -120,6 +120,11 @@ def parse_args() -> argparse.Namespace:
                         help="caption text size in pixels")
     parser.add_argument("--qr-caption", metavar="TEXT",
                         help="text under the QR (empty string for none)")
+    parser.add_argument("--camera-hint", metavar="TEXT",
+                        help="look-at-the-lens line under the countdown "
+                             "(empty string for none)")
+    parser.add_argument("--camera-hint-size", type=int, metavar="PX",
+                        help="size of that line in pixels")
     parser.add_argument("--portal-qr", metavar="PNG",
                         help="portal-URL QR to overlay (see display.py --help)")
     parser.add_argument("--no-portal-qr", action="store_true",
@@ -214,7 +219,7 @@ def shoot(camera: Camera, countdown_s: float = 0.0, notify=None) -> bool:
 
 
 def viewer_options(args) -> list[str]:
-    """QR flags to forward to display.py, omitting anything not asked for."""
+    """Viewer flags to forward to display.py, omitting anything not asked for."""
     options: list[str] = []
     if args.no_qr:
         options.append("--no-qr")
@@ -228,6 +233,10 @@ def viewer_options(args) -> list[str]:
         options += ["--qr-caption-size", str(args.qr_caption_size)]
     if args.qr_caption is not None:
         options += ["--qr-caption", args.qr_caption]
+    if args.camera_hint is not None:
+        options += ["--camera-hint", args.camera_hint]
+    if args.camera_hint_size is not None:
+        options += ["--camera-hint-size", str(args.camera_hint_size)]
     if args.no_portal_qr:
         options.append("--no-portal-qr")
     if args.portal_qr:

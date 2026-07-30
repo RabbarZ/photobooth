@@ -92,6 +92,10 @@ COUNTDOWN_COLOUR = (245, 245, 245)
 # they get full brightness and a colour that reads as a fault rather than the
 # muted grey of ordinary status text.
 WARNING_COLOUR = (228, 82, 72)
+# The camera hint is an instruction to act on within the next three seconds,
+# not chrome, so it gets the countdown's brightness rather than the muted grey
+# of ordinary status text -- which at across-the-room distance simply vanishes.
+HINT_COLOUR = (245, 245, 245)
 
 # Keeps wrapped text off the very edge of the panel.
 MESSAGE_MARGIN = 48
@@ -103,14 +107,22 @@ BADGE_MARGIN = 24
 # Vertical gap between the two QR plates. Each code sits on its own plate, so
 # this is the only thing tying the two steps together visually -- keep it small
 # enough that they still read as one instruction rather than two offers.
-DEFAULT_QR_GAP = 32
+DEFAULT_QR_GAP = 200
 
 # Caption size in pixels. A title, not a footnote: the caption has to be read
 # from where people are standing, which is much further away than the distance
 # at which a phone can actually resolve the code beneath it. Absolute rather
 # than derived from the QR height, so resizing the codes cannot quietly shrink
 # the words back into illegibility.
-DEFAULT_QR_CAPTION_SIZE = 56
+DEFAULT_QR_CAPTION_SIZE = 36
+
+# Shown under the countdown. The lens sits below the display, so the moment a
+# guest most needs to look away from the screen is exactly the moment they are
+# most fixed on it -- and the resulting photos are all of people looking
+# slightly too high. The arrows do the work here: they point at the camera
+# whether or not the words get read inside the three seconds available.
+DEFAULT_CAMERA_HINT = "↓ Kamera hier unten ↓"
+DEFAULT_CAMERA_HINT_SIZE = 128
 
 # Commands accepted on stdin, one per line. booth.py sends these down the
 # pipe it already owns, so the countdown appears on screen the instant the
@@ -462,13 +474,13 @@ def render_message(text: str, size: int, colour, max_width: int,
 
 def text_area(screen: pygame.Surface,
               badge: "BadgePanel | None") -> pygame.Rect:
-    """The part of the screen a message may use without hiding under the QRs.
+    """The part of the screen an overlay may use without hiding under the QRs.
 
     The plates are drawn last and so win every overlap; a warning nobody can
     read because a QR is sitting on top of it is worse than no warning. The
     stack is centred on the right edge, spanning the middle of the screen, so
-    there is no band above or below it to hand the text -- messages take the
-    column to its left instead.
+    there is no band above or below it to hand the text -- everything drawn
+    over a photo takes the column to its left instead, countdown included.
     """
     area = screen.get_rect()
     width = badge.footprint()[0] if badge is not None else 0
@@ -479,21 +491,49 @@ def text_area(screen: pygame.Surface,
 
 
 def draw_overlay(screen: pygame.Surface, kind: str, value: str,
-                 badge: "BadgePanel | None" = None) -> None:
-    """Draw a countdown digit or a short message, centred on black."""
+                 badge: "BadgePanel | None" = None,
+                 hint: str = "",
+                 hint_size: int = DEFAULT_CAMERA_HINT_SIZE) -> None:
+    """Draw a countdown digit or a short message, centred on black.
+
+    `hint` is the look-at-the-lens line, drawn under the countdown -- the one
+    stretch where the guest still has time to act on it.
+    """
     screen.fill(BACKGROUND)
     height = screen.get_height()
+    # The countdown lays out in the same clear column as the messages, not on
+    # the full screen: with a hint underneath it, anything centred on the
+    # screen would have to wrap into the sliver that stays clear of the plates
+    # on both sides, and on a small screen that sliver is a few words wide.
+    area = text_area(screen, badge)
     if kind == "count":
         surface = _font(max(64, height * 2 // 3)).render(
             value, True, COUNTDOWN_COLOUR)
-        area = screen.get_rect()
     else:
         colour = WARNING_COLOUR if kind == "warning" else TEXT_COLOUR
-        area = text_area(screen, badge)
         surface = render_message(value, max(32, height // 10), colour,
                                  area.width - 2 * MESSAGE_MARGIN,
                                  area.height - 2 * MESSAGE_MARGIN)
-    screen.blit(surface, surface.get_rect(center=area.center))
+
+    # Countdown only. By the time "Aufnahme..." is up the shutter has already
+    # gone, so the hint would be telling people where to look a moment too
+    # late -- and pulling their eyes off the lens just as the next frame lands.
+    banner = None
+    if hint and kind == "count":
+        banner = render_message(hint, hint_size, HINT_COLOUR,
+                                area.width - 2 * MESSAGE_MARGIN)
+
+    if banner is None:
+        screen.blit(surface, surface.get_rect(center=area.center))
+    else:
+        gap = hint_size // 2
+        total = surface.get_height() + gap + banner.get_height()
+        # Clamped so an oversized countdown digit loses its slack at the
+        # bottom rather than pushing the hint off the screen.
+        top = max(0, min(area.centery - total // 2, area.bottom - total))
+        screen.blit(surface, surface.get_rect(midtop=(area.centerx, top)))
+        screen.blit(banner, banner.get_rect(
+            midtop=(area.centerx, top + surface.get_height() + gap)))
     # The QR stays up during the countdown too: a guest waiting for the shutter
     # is exactly who has a spare moment to scan it.
     if badge is not None:
@@ -545,6 +585,15 @@ def parse_args() -> argparse.Namespace:
                              f"(default: {DEFAULT_QR_CAPTION_SIZE})")
     parser.add_argument("--qr-caption", default=DEFAULT_QR_CAPTION,
                         help="text under the QR (empty string for none)")
+    parser.add_argument("--camera-hint", default=DEFAULT_CAMERA_HINT,
+                        metavar="TEXT",
+                        help=f"line under the countdown, pointing at the lens "
+                             f"below the screen; empty string for none "
+                             f"(default: {DEFAULT_CAMERA_HINT!r})")
+    parser.add_argument("--camera-hint-size", type=int,
+                        default=DEFAULT_CAMERA_HINT_SIZE, metavar="PX",
+                        help=f"size of that line "
+                             f"(default: {DEFAULT_CAMERA_HINT_SIZE})")
     parser.add_argument("--portal-qr", type=Path,
                         default=DEFAULT_PORTAL_QR_PATH, metavar="PNG",
                         help=f"portal-URL QR, written at AP bring-up; opens "
@@ -644,7 +693,9 @@ def main() -> int:
                 print(f"Unknown command: {command}", file=sys.stderr)
                 continue
             if overlay is not None:
-                draw_overlay(screen, *overlay, badge=badge)
+                draw_overlay(screen, *overlay, badge=badge,
+                             hint=args.camera_hint,
+                             hint_size=args.camera_hint_size)
 
         now = time.monotonic()
         if now >= next_poll:
@@ -668,7 +719,9 @@ def main() -> int:
             # is always one a phone can actually use.
             elif badge is not None and badge.changed():
                 if overlay is not None:
-                    draw_overlay(screen, *overlay, badge=badge)
+                    draw_overlay(screen, *overlay, badge=badge,
+                                 hint=args.camera_hint,
+                                 hint_size=args.camera_hint_size)
                 else:
                     draw(screen, surface, badge=badge,
                          message=None if surface else "Warte auf das erste Foto...")
