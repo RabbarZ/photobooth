@@ -116,6 +116,8 @@ def parse_args() -> argparse.Namespace:
                         help="QR size in pixels")
     parser.add_argument("--qr-gap", type=int, metavar="PX",
                         help="vertical gap between the QR plates in pixels")
+    parser.add_argument("--qr-caption-size", type=int, metavar="PX",
+                        help="caption text size in pixels")
     parser.add_argument("--qr-caption", metavar="TEXT",
                         help="text under the QR (empty string for none)")
     parser.add_argument("--portal-qr", metavar="PNG",
@@ -222,6 +224,8 @@ def viewer_options(args) -> list[str]:
         options += ["--qr-height", str(args.qr_height)]
     if args.qr_gap is not None:
         options += ["--qr-gap", str(args.qr_gap)]
+    if args.qr_caption_size is not None:
+        options += ["--qr-caption-size", str(args.qr_caption_size)]
     if args.qr_caption is not None:
         options += ["--qr-caption", args.qr_caption]
     if args.no_portal_qr:

@@ -105,6 +105,13 @@ BADGE_MARGIN = 24
 # enough that they still read as one instruction rather than two offers.
 DEFAULT_QR_GAP = 32
 
+# Caption size in pixels. A title, not a footnote: the caption has to be read
+# from where people are standing, which is much further away than the distance
+# at which a phone can actually resolve the code beneath it. Absolute rather
+# than derived from the QR height, so resizing the codes cannot quietly shrink
+# the words back into illegibility.
+DEFAULT_QR_CAPTION_SIZE = 56
+
 # Commands accepted on stdin, one per line. booth.py sends these down the
 # pipe it already owns, so the countdown appears on screen the instant the
 # trigger fires rather than only in the console.
@@ -276,10 +283,14 @@ class BadgePanel:
     """
 
     def __init__(self, entries: "list[tuple[Path, str]]", height: int,
-                 gap: int = DEFAULT_QR_GAP) -> None:
+                 gap: int = DEFAULT_QR_GAP,
+                 caption_size: int = DEFAULT_QR_CAPTION_SIZE) -> None:
         self.entries = entries
         self.height = height
         self.gap = gap
+        # Floored: pygame quietly accepts 0 and renders a caption two pixels
+        # tall rather than failing, which looks like the text went missing.
+        self.caption_size = max(16, caption_size)
         self._mtimes: list[float | None] = [None] * len(entries)
         self._plates: list[pygame.Surface] = []
 
@@ -300,10 +311,13 @@ class BadgePanel:
     def _compose_one(self, qr: pygame.Surface,
                      label: pygame.Surface | None, pad: int) -> pygame.Surface:
         """One code and its caption on a plate of their own."""
+        # Breathing room between code and caption, scaled to the caption: a
+        # title set tight under the QR reads as part of the pattern above it.
+        lead = max(pad // 2, self.caption_size // 4)
         width = max(self.height, label.get_width() if label else 0) + pad * 2
         height = pad + self.height
         if label:
-            height += pad // 2 + label.get_height()
+            height += lead + label.get_height()
         height += pad
 
         # Opaque white plate: the codes need their quiet zone and hard contrast
@@ -315,13 +329,13 @@ class BadgePanel:
         plate.blit(qr, ((width - self.height) // 2, y))
         y += self.height
         if label:
-            y += pad // 2
+            y += lead
             plate.blit(label, ((width - label.get_width()) // 2, y))
         return plate
 
     def _compose(self) -> list[pygame.Surface]:
         pad = max(8, self.height // 20)
-        font = _font(max(16, self.height // 9))
+        font = _font(self.caption_size)
 
         # A code whose file is missing is skipped entirely rather than leaving
         # a white gap where a QR should be.
@@ -525,6 +539,10 @@ def parse_args() -> argparse.Namespace:
                         metavar="PX",
                         help=f"vertical gap between the QR plates "
                              f"(default: {DEFAULT_QR_GAP})")
+    parser.add_argument("--qr-caption-size", type=int,
+                        default=DEFAULT_QR_CAPTION_SIZE, metavar="PX",
+                        help=f"caption text size for both QRs "
+                             f"(default: {DEFAULT_QR_CAPTION_SIZE})")
     parser.add_argument("--qr-caption", default=DEFAULT_QR_CAPTION,
                         help="text under the QR (empty string for none)")
     parser.add_argument("--portal-qr", type=Path,
@@ -583,7 +601,8 @@ def main() -> int:
             print(f"Portal QR not found at {args.portal_qr} -- it is written "
                   f"when the AP starts (main.py, not display.py alone)",
                   file=sys.stderr)
-    badge = BadgePanel(entries, args.qr_height, args.qr_gap) if entries else None
+    badge = (BadgePanel(entries, args.qr_height, args.qr_gap,
+                        args.qr_caption_size) if entries else None)
     shown: Path | None = None
     surface: pygame.Surface | None = None
     overlay: tuple[str, str] | None = None
