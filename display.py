@@ -78,9 +78,9 @@ DEFAULT_QR_CAPTION = "1. Mit WLAN verbinden"
 
 # Written once at AP bring-up (gallery/accesspoint.py), never rotated: it
 # encodes the portal URL, not credentials. Scanning it opens the gallery
-# directly. Same size as the join QR and on the same plate: the two are one
-# two-step instruction, and a smaller second code read as optional when it is
-# not -- but it is useless before the phone is on the network, hence "2.".
+# directly. Same size as the join QR: the two are one two-step instruction,
+# and a smaller second code read as optional when it is not -- but it is
+# useless before the phone is on the network, hence "2.".
 DEFAULT_PORTAL_QR_PATH = Path("/var/lib/photobooth/portal-qr.png")
 DEFAULT_PORTAL_QR_CAPTION = "2. Galerie öffnen"
 
@@ -96,9 +96,14 @@ WARNING_COLOUR = (228, 82, 72)
 # Keeps wrapped text off the very edge of the panel.
 MESSAGE_MARGIN = 48
 
-# Gap between the QR plate and the screen edges. Shared with the message
-# layout, which reserves the plate's footprint so text is never drawn under it.
+# Gap between the QR plates and the screen edge. Shared with the message
+# layout, which reserves their footprint so text is never drawn under them.
 BADGE_MARGIN = 24
+
+# Vertical gap between the two QR plates. Each code sits on its own plate, so
+# this is the only thing tying the two steps together visually -- keep it small
+# enough that they still read as one instruction rather than two offers.
+DEFAULT_QR_GAP = 32
 
 # Commands accepted on stdin, one per line. booth.py sends these down the
 # pipe it already owns, so the countdown appears on screen the instant the
@@ -259,22 +264,24 @@ class CommandReader:
 
 
 class BadgePanel:
-    """Both QR codes on one white plate: step 1 above step 2.
+    """One white plate per QR code, stacked down the right edge.
 
-    One plate rather than two, because the codes are a single two-step
-    instruction and two floating boxes read as two unrelated offers. Both codes
-    are rendered at the same size for the same reason -- differing sizes imply
-    one matters more, when in fact neither works without the other.
+    A plate each rather than one shared box, so the codes can be spaced apart
+    by `gap` without the padding of a common frame fighting it. Both codes are
+    still rendered at the same size -- differing sizes imply one matters more,
+    when in fact neither works without the other.
 
     The render loop only calls changed() and blit_onto(), so it does not care
-    how many codes are on the plate.
+    how many codes there are.
     """
 
-    def __init__(self, entries: "list[tuple[Path, str]]", height: int) -> None:
+    def __init__(self, entries: "list[tuple[Path, str]]", height: int,
+                 gap: int = DEFAULT_QR_GAP) -> None:
         self.entries = entries
         self.height = height
+        self.gap = gap
         self._mtimes: list[float | None] = [None] * len(entries)
-        self._panel: pygame.Surface | None = None
+        self._plates: list[pygame.Surface] = []
 
     # -- composition ---------------------------------------------------------
 
@@ -290,49 +297,42 @@ class BadgePanel:
         image = image.resize((self.height, self.height), Image.NEAREST)
         return pygame.image.frombuffer(image.tobytes(), image.size, "RGB")
 
-    def _compose(self) -> pygame.Surface | None:
-        pad = max(8, self.height // 20)
-        font = _font(max(16, self.height // 9))
-
-        # Load first: a code whose file is missing is skipped entirely rather
-        # than leaving a white gap where a QR should be.
-        blocks = []
-        for path, caption in self.entries:
-            qr = self._load(path)
-            if qr is None:
-                continue
-            blocks.append((qr, font.render(caption, True, (20, 20, 20))
-                           if caption else None))
-        if not blocks:
-            return None
-
-        widths = [self.height] + [lbl.get_width() for _, lbl in blocks if lbl]
-        width = max(widths) + pad * 2
-
-        height = pad
-        for index, (_, label) in enumerate(blocks):
-            height += self.height
-            if label:
-                height += pad // 2 + label.get_height()
-            # Gap between the two steps, but not after the last one.
-            height += pad if index < len(blocks) - 1 else 0
+    def _compose_one(self, qr: pygame.Surface,
+                     label: pygame.Surface | None, pad: int) -> pygame.Surface:
+        """One code and its caption on a plate of their own."""
+        width = max(self.height, label.get_width() if label else 0) + pad * 2
+        height = pad + self.height
+        if label:
+            height += pad // 2 + label.get_height()
         height += pad
 
         # Opaque white plate: the codes need their quiet zone and hard contrast
         # regardless of how dark or busy the photo behind them happens to be.
-        panel = pygame.Surface((width, height))
-        panel.fill((255, 255, 255))
+        plate = pygame.Surface((width, height))
+        plate.fill((255, 255, 255))
 
         y = pad
-        for index, (qr, label) in enumerate(blocks):
-            panel.blit(qr, ((width - self.height) // 2, y))
-            y += self.height
-            if label:
-                y += pad // 2
-                panel.blit(label, ((width - label.get_width()) // 2, y))
-                y += label.get_height()
-            y += pad if index < len(blocks) - 1 else 0
-        return panel
+        plate.blit(qr, ((width - self.height) // 2, y))
+        y += self.height
+        if label:
+            y += pad // 2
+            plate.blit(label, ((width - label.get_width()) // 2, y))
+        return plate
+
+    def _compose(self) -> list[pygame.Surface]:
+        pad = max(8, self.height // 20)
+        font = _font(max(16, self.height // 9))
+
+        # A code whose file is missing is skipped entirely rather than leaving
+        # a white gap where a QR should be.
+        plates = []
+        for path, caption in self.entries:
+            qr = self._load(path)
+            if qr is None:
+                continue
+            label = font.render(caption, True, (20, 20, 20)) if caption else None
+            plates.append(self._compose_one(qr, label, pad))
+        return plates
 
     # -- caching -------------------------------------------------------------
 
@@ -355,21 +355,44 @@ class BadgePanel:
         """
         return self._current_mtimes() != self._mtimes
 
-    def surface(self) -> pygame.Surface | None:
-        """Current plate, rebuilt only when one of the PNGs changes."""
+    def surfaces(self) -> list[pygame.Surface]:
+        """Current plates, rebuilt only when one of the PNGs changes."""
         stamps = self._current_mtimes()
         if stamps != self._mtimes:
             self._mtimes = stamps
-            self._panel = self._compose()
-        return self._panel
+            self._plates = self._compose()
+        return self._plates
+
+    def footprint(self) -> tuple[int, int]:
+        """Size of the whole stack, gaps included: (width, height).
+
+        The one place the stack's extent is worked out, so what blit_onto
+        draws and what text_area keeps clear can never drift apart.
+        """
+        plates = self.surfaces()
+        if not plates:
+            return 0, 0
+        width = max(plate.get_width() for plate in plates)
+        height = (sum(plate.get_height() for plate in plates)
+                  + self.gap * (len(plates) - 1))
+        return width, height
 
     def blit_onto(self, screen: pygame.Surface,
                   margin: int = BADGE_MARGIN) -> None:
-        panel = self.surface()
-        if panel is None:
+        plates = self.surfaces()
+        if not plates:
             return
-        screen.blit(panel, (screen.get_width() - panel.get_width() - margin,
-                            screen.get_height() - panel.get_height() - margin))
+        width, total = self.footprint()
+        # One vertical axis for every plate: the captions differ in width, so
+        # aligning their right edges instead would leave the codes themselves
+        # visibly stepped.
+        axis = screen.get_width() - margin - width // 2
+        # Clamped so a stack taller than the screen runs off the bottom rather
+        # than off the top, where it would lose the first step.
+        y = max(margin, (screen.get_height() - total) // 2)
+        for plate in plates:
+            screen.blit(plate, (axis - plate.get_width() // 2, y))
+            y += plate.get_height() + self.gap
 
 
 _FONT_CACHE: dict[int, pygame.font.Font] = {}
@@ -427,17 +450,17 @@ def text_area(screen: pygame.Surface,
               badge: "BadgePanel | None") -> pygame.Rect:
     """The part of the screen a message may use without hiding under the QRs.
 
-    The badge plate is drawn last and so wins every overlap; a warning nobody
-    can read because a QR is sitting on top of it is worse than no warning.
-    The plate lives in the bottom-right corner, so messages take the band
-    above it -- which keeps them horizontally centred, unlike squeezing them
-    into the column beside it.
+    The plates are drawn last and so win every overlap; a warning nobody can
+    read because a QR is sitting on top of it is worse than no warning. The
+    stack is centred on the right edge, spanning the middle of the screen, so
+    there is no band above or below it to hand the text -- messages take the
+    column to its left instead.
     """
     area = screen.get_rect()
-    panel = badge.surface() if badge is not None else None
-    if panel is not None:
-        area.height = max(area.height // 3,
-                          area.height - panel.get_height() - 2 * BADGE_MARGIN)
+    width = badge.footprint()[0] if badge is not None else 0
+    if width:
+        area.width = max(area.width // 3,
+                         area.width - width - 2 * BADGE_MARGIN)
     return area
 
 
@@ -498,6 +521,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qr-height", type=int, default=DEFAULT_QR_HEIGHT,
                         metavar="PX",
                         help=f"QR size in pixels (default: {DEFAULT_QR_HEIGHT})")
+    parser.add_argument("--qr-gap", type=int, default=DEFAULT_QR_GAP,
+                        metavar="PX",
+                        help=f"vertical gap between the QR plates "
+                             f"(default: {DEFAULT_QR_GAP})")
     parser.add_argument("--qr-caption", default=DEFAULT_QR_CAPTION,
                         help="text under the QR (empty string for none)")
     parser.add_argument("--portal-qr", type=Path,
@@ -542,8 +569,8 @@ def main() -> int:
     screen_size = screen.get_size()
     clock = pygame.time.Clock()
     commands = CommandReader(sys.stdin)
-    # Both codes at args.qr_height, on one plate: they are two steps of one
-    # instruction, so they are sized and framed alike.
+    # Both codes at args.qr_height: they are two steps of one instruction, so
+    # they are sized and framed alike even on separate plates.
     entries = []
     if not args.no_qr:
         entries.append((args.qr, args.qr_caption))
@@ -556,7 +583,7 @@ def main() -> int:
             print(f"Portal QR not found at {args.portal_qr} -- it is written "
                   f"when the AP starts (main.py, not display.py alone)",
                   file=sys.stderr)
-    badge = BadgePanel(entries, args.qr_height) if entries else None
+    badge = BadgePanel(entries, args.qr_height, args.qr_gap) if entries else None
     shown: Path | None = None
     surface: pygame.Surface | None = None
     overlay: tuple[str, str] | None = None

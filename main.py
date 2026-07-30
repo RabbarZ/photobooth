@@ -93,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="do not overlay the join QR")
     screen.add_argument("--qr-height", type=int, metavar="PX",
                         help="QR size in pixels")
+    screen.add_argument("--qr-gap", type=int, metavar="PX",
+                        help="vertical gap between the QR plates in pixels")
     screen.add_argument("--qr-caption", metavar="TEXT", help="text under the QR")
     screen.add_argument("--portal-qr", metavar="PNG",
                         help="portal-URL QR to overlay; opens the gallery "
@@ -133,7 +135,8 @@ def to_booth_args(args) -> argparse.Namespace:
         mock_camera=args.mock_camera,
         display=not args.no_display,
         qr=args.qr, no_qr=args.no_qr,
-        qr_height=args.qr_height, qr_caption=args.qr_caption,
+        qr_height=args.qr_height, qr_gap=args.qr_gap,
+        qr_caption=args.qr_caption,
         portal_qr=args.portal_qr, no_portal_qr=args.no_portal_qr,
         portal_qr_caption=args.portal_qr_caption,
         gpio_pin=args.gpio_pin, no_gpio=args.no_gpio,
