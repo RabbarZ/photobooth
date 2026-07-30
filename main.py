@@ -8,7 +8,7 @@ now started and stopped by the same command that runs the booth.
     sudo python3 main.py                       # AP + booth + screen
     sudo python3 main.py --mock-camera         # no camera: recycle photos/
     sudo python3 main.py --no-wifi             # booth only, leave the radio alone
-    sudo python3 main.py --hard-limit 15 --soft-limit 2
+    sudo python3 main.py --rotate-interval 15 --valid-passphrases 2
 
 Root is required because the AP needs to reconfigure the interface and drive
 hostapd. With --no-wifi it runs fine as an ordinary user.
@@ -48,14 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="on exit, also hand the interface back to "
                            "NetworkManager (restores normal Wi-Fi)")
 
+    # These two are the only thing bounding a guest's session: a rotation
+    # deauthenticates everyone, and a guest can only return while the
+    # passphrase they scanned is still in the ring. There is no separate
+    # session limit any more -- see the note in gallery/config.yaml.
     limits = parser.add_argument_group(
-        "guest session limits (override gallery/config.yaml for this run)")
-    limits.add_argument("--hard-limit", type=float, metavar="MIN",
-                        help="wall-clock cap from a guest's first connection")
-    limits.add_argument("--soft-limit", type=float, metavar="MIN",
-                        help="idle cap: no portal request for this long")
-    limits.add_argument("--bulk-grace", type=float, metavar="MIN",
-                        help="idle-kick suppression while a bulk download runs")
+        "guest access (override gallery/config.yaml for this run)")
     limits.add_argument("--rotate-interval", type=float, metavar="MIN",
                         help="how often a new Wi-Fi passphrase is minted")
     limits.add_argument("--valid-passphrases", type=int, metavar="N",
@@ -109,18 +107,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def session_overrides(args) -> dict:
-    """Turn the limit flags into a config overlay, or {} if none were given."""
-    session = {}
-    if args.hard_limit is not None:
-        session["hard_limit_minutes"] = args.hard_limit
-    if args.soft_limit is not None:
-        session["soft_limit_minutes"] = args.soft_limit
-    if args.bulk_grace is not None:
-        session["bulk_download_grace_minutes"] = args.bulk_grace
-
+    """Turn the access flags into a config overlay, or {} if none were given."""
     overlay: dict = {}
-    if session:
-        overlay["session"] = session
     password = {}
     if args.rotate_interval is not None:
         password["rotate_interval_minutes"] = args.rotate_interval
@@ -214,7 +202,7 @@ def main() -> int:
             print("\n  Watching guest devices. Join from a phone to see what "
                   "it does.\n", flush=True)
     elif session_overrides(args):
-        log.warning("session limit flags ignored: they configure the guest "
+        log.warning("passphrase flags ignored: they configure the guest "
                     "Wi-Fi, which --no-wifi disables")
 
     try:

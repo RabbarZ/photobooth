@@ -26,20 +26,5 @@
 {% endif %}
 
 <footer><p>Mit der Fotobox verbunden. Hier gibt es kein Internet.</p></footer>
-
-<script>
-// Heartbeat: resets the server's idle timer while this page is open. Errors are
-// ignored on purpose -- a failed beat must never break the gallery.
-const BEAT_MS = {{ heartbeat_seconds }} * 1000;
-function beat() {
-  fetch('/api/heartbeat', {method: 'POST', cache: 'no-store'}).catch(() => {});
-}
-setInterval(beat, BEAT_MS);
-// Beat again when the phone wakes and the tab becomes visible, so a returning
-// guest is not sitting on an already-expired idle timer.
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) beat();
-});
-</script>
 </body>
 </html>

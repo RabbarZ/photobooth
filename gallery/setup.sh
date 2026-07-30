@@ -42,17 +42,16 @@ systemctl disable --now dnsmasq 2>/dev/null || true
 say "Creating state directories"
 install -d -m 0755 -o pi -g pi "$STATE_DIR" "$STATE_DIR/thumbs"
 
-# /run/photobooth holds the session database, shared by the portal (runs as pi)
-# and the session manager (runs as root, because it drives hostapd_cli).
-# Declaring RuntimeDirectory= in both units instead makes systemd chown the
-# directory to whichever unit started last, locking the other one out -- which
-# shows up as "attempt to write a readonly database" and a 500 on the gallery.
+# /run/photobooth holds main.py's runtime overrides, written as root and read
+# by the daemons running as pi. Declaring RuntimeDirectory= in a unit instead
+# would make systemd chown the directory to that unit's user, locking the
+# others out.
 cat > /etc/tmpfiles.d/photobooth.conf <<'TMPFILES'
 # Installed by photobooth setup.sh
 d /run/photobooth 0775 pi pi -
 TMPFILES
 systemd-tmpfiles --create /etc/tmpfiles.d/photobooth.conf
-echo "  /run/photobooth (session state, shared pi/root)"
+echo "  /run/photobooth (runtime overrides)"
 install -d -m 0755 /etc/hostapd
 echo "  $STATE_DIR (thumbs, zip, QR, current password)"
 
@@ -146,8 +145,8 @@ systemctl enable --now photobooth-portal.service photobooth-ingest.service
 # start, it starts as a whole: photobooth-ap owns the interface address, and
 # hostapd/dnsmasq cannot run without it. That ordering is what stops an SSID
 # broadcasting with no DHCP server behind it.
-systemctl disable photobooth-ap.service photobooth-sessions.service \
-    photobooth-rotate.service hostapd.service dnsmasq.service >/dev/null 2>&1 || true
+systemctl disable photobooth-ap.service photobooth-rotate.service \
+    hostapd.service dnsmasq.service >/dev/null 2>&1 || true
 echo "  portal + ingest started and enabled; AP stack installed, started by main.py"
 
 say "Done"

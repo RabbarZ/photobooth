@@ -41,20 +41,19 @@ python3 accesspoint.py status
 > becomes AP-only and **any SSH session over Wi-Fi dies when the AP comes up**.
 > Run it from the console, or manage the Pi over Ethernet.
 
-### Session limits at launch
+### Guest access at launch
 
-The guest lockout timers live in `config.yaml`, but `main.py` can override them
-for a single run without editing the file:
+How long a guest gets is set by the passphrase ring in `config.yaml`, but
+`main.py` can override it for a single run without editing the file:
 
 ```bash
-sudo python3 ../main.py --hard-limit 15 --soft-limit 2 --bulk-grace 5
-sudo python3 ../main.py --rotate-interval 10
+sudo python3 ../main.py --rotate-interval 10 --valid-passphrases 3
 ```
 
 Overrides are written to `/run/photobooth/overrides.yaml` and merged over
-`config.yaml` by every daemon. That path is tmpfs, so a timer you passed for one
-evening disappears at reboot instead of quietly becoming the permanent default.
-The merge is per-key, so setting `--hard-limit` alone leaves the others intact.
+`config.yaml` by every daemon. That path is tmpfs, so a setting you passed for
+one evening disappears at reboot instead of quietly becoming the permanent
+default. The merge is per-key, so setting one flag leaves the others intact.
 
 ## Configuration
 
@@ -73,17 +72,15 @@ Everything else is read at runtime — `systemctl restart photobooth-*` is enoug
 
 | Unit | Runs as | Job |
 | --- | --- | --- |
-| `photobooth-portal` | pi | gunicorn + Flask: gallery, heartbeat, grace windows |
+| `photobooth-portal` | pi | gunicorn + Flask: the gallery listing, and nothing else |
 | `photobooth-ingest` | pi | thumbnails + prebuilt zip, `Nice=10`, IO idle |
-| `photobooth-sessions` | root | enforces both limits via `hostapd_cli` |
 | `photobooth-rotate` | root | rotates the passphrase, rewrites the QR |
 | `photobooth-ap` | root | owns the interface address; hostapd/dnsmasq `BindsTo` it |
 
 Portal and ingest are **enabled at boot** — they never touch the radio, and the
 gallery stays reachable over whatever network the Pi is on.
 
-The AP stack (`photobooth-ap`, `hostapd`, `dnsmasq`, `photobooth-sessions`,
-`photobooth-rotate`) is deliberately **not enabled at boot**. `main.py` owns the
+The AP stack (`photobooth-ap`, `hostapd`, `dnsmasq`, `photobooth-rotate`) is deliberately **not enabled at boot**. `main.py` owns the
 guest Wi-Fi: it comes up when the booth starts and goes down when it exits. If
 these were enabled, the SSID would appear at boot with no booth behind it, and
 `--no-wifi` would not mean anything.
@@ -186,43 +183,56 @@ instead of failing cleanly those would get a stray `204` and misbehave.
 > **The trade: while a guest is on this Wi-Fi they have no internet and their
 > phone no longer warns them.** Nothing else resolves, so other apps and sites
 > simply fail rather than falling back to mobile data. That is the price of
-> silencing the prompt, and it is why the session limits matter — a guest is
-> kicked back to normal connectivity within `hard_limit_minutes`.
+> silencing the prompt, and it is why the passphrase ring matters — a guest is
+> returned to normal connectivity once the code they scanned ages out, within
+> `valid_passphrases` × `rotate_interval_minutes`.
 
 `dhcp-option:router` is deliberately **not** sent either. Advertising a default
 gateway that routes nowhere makes a phone treat this as its internet path and
 stall on every lookup; without one the OS keeps using mobile data for
 everything else while `10.42.0.1` stays reachable.
 
-## Sessions: two timers, no blocklist
+## Sessions: none, by design
 
-| Limit | Default | Trigger |
-| --- | --- | --- |
-| Hard | 30 min | wall clock since first association |
-| Soft | 5 min | no gallery request (page load or heartbeat) |
-| Bulk grace | 10 min | suppresses the soft kick during a download |
+There are **no session limits**. There used to be two — a hard wall-clock cap
+and a soft idle cap, enforced by a `photobooth-sessions` daemon that called
+`hostapd_cli deauthenticate`. Both were removed, along with the daemon, the
+per-device state database, the gallery heartbeat and the bulk-download grace
+window.
 
-Kicks are `hostapd_cli deauthenticate <MAC>`. **There is no MAC blocklist** —
-deauth alone would let a device reassociate a second later, so the real
-gatekeeper is password rotation: a kicked guest cannot rejoin until they rescan
-the QR. A guest who deserves another turn simply scans again.
+They were removed because they could not do what they claimed. A deauth does
+not evict anyone: a phone reassociates on its cached passphrase in about a
+second — measured, not assumed. So neither timer could end a session that the
+passphrase ring was not already ending, and the idle timer was worse than
+neutral. Kicking a device deleted its row, and the reconnection a second later
+recreated it with a fresh `first_seen`, which **reset the hard clock**. The soft
+limit could stop the hard limit from ever firing on exactly the squatter it was
+written to catch.
 
-Sessions are keyed by MAC, resolved from the client IP via the dnsmasq lease
-file, falling back to `ip neigh` (which catches a client using a static
-address). Association alone starts the hard clock, so an idle squatter that
-never opens the gallery is still visible and still gets kicked.
+### What bounds a session now
 
-State is SQLite on `/run` (tmpfs). It is rewritten every few seconds and none of
-it needs to survive a reboot, so keeping it off the SD card avoids flash wear.
+The passphrase ring, and only that. Every rotation deauthenticates all stations
+so they re-key, and a guest can return only while the code they scanned is still
+in the ring:
 
-### Why a server-side grace window
+    session length ≈ valid_passphrases × rotate_interval_minutes
 
-The page heartbeats every 30 s, which handles the ordinary idle case. But a
-~500 MB download over this radio takes **minutes** and routinely outlives the
-page that started it — the phone locks, the browser is backgrounded, heartbeats
-stop. Relying on the heartbeat alone would kick guests mid-download. So pressing
-*Download all* registers a grace window server-side **before** navigating, and
-the session manager honours it even with no heartbeats at all.
+At the defaults (3 × 10 min) that is a cap of 30 minutes, measured from when the
+code was *minted* rather than when it was scanned — so 20–30 minutes in
+practice. To change how long guests get, change those two settings. Nothing
+else caps it.
+
+The trade-offs this accepts, deliberately:
+
+- **No idle/active distinction.** The cap is pure wall clock. A guest actively
+  browsing at minute 29 is cut at the same moment as one who left at minute 4.
+- **Session length is welded to reconnect forgiveness.** The same product also
+  controls how long a phone can be away — behind a wall, in power save — and
+  still rejoin on a cached key. You cannot lengthen one without the other.
+- **The cap is emergent, not declared.** Raise `valid_passphrases` to 6 and
+  sessions silently become an hour, with nothing to complain about it.
+- **No per-device eviction at all.** Abusive download behaviour is metered by
+  nginx (`per_device_downloads`, `global_downloads`), not by kicking anyone.
 
 ## Password rotation and the key ring
 
@@ -389,7 +399,7 @@ curl -sI -H 'Host: connectivitycheck.gstatic.com' http://127.0.0.1/generate_204 
 
 # Live
 hostapd_cli -i wlan0 list_sta
-journalctl -fu photobooth-sessions -u photobooth-rotate -u hostapd
+journalctl -fu photobooth-rotate -u hostapd
 cat /var/lib/photobooth/current-password.txt
 ```
 
@@ -401,8 +411,7 @@ config.yaml            all tunables — the single source of truth
 accesspoint.py         AP lifecycle: interface, hostapd, dnsmasq (was 3 .sh files)
 wifiqr.py              WIFI: join payload + URL QR rendering (both codes)
 pbcommon.py            config (+ runtime overrides), IP->MAC, state, hostapd_cli
-portal.py              Flask: gallery, heartbeat, grace registration
-session_manager.py     the two timers -> deauth
+portal.py              Flask: the gallery listing
 rotate_password.py     passphrase rotation, delegates the QR to wifiqr.py
 ingest.py              thumbnails + prebuilt store-only zip
 render_configs.py      config.yaml -> system files

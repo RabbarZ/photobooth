@@ -21,8 +21,8 @@ restarting this service does not invalidate everyone's cached passphrase.
 WHAT ROTATION DOES NOT DO: it does not evict anyone. A deauthenticated device
 reassociates immediately on its cached key -- measured at about one second.
 Rotation only affects devices re-authenticating after their key has aged out,
-which hits innocent guests as readily as departing ones. Airtime is reclaimed
-by session_manager.py's deauth, not by this.
+which hits innocent guests as readily as departing ones. Since the session
+limits were removed, this ageing-out is the ONLY thing that ends a session.
 
 CAVEAT: on hostapd 2.10, RELOAD_WPA_PSK returns OK and rereads the file, but the
 daemon still deauthenticates stations so they re-key. Every rotation therefore

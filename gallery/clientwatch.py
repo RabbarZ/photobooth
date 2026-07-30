@@ -215,5 +215,5 @@ def preflight(config: dict) -> list[str]:
     ok, out = pbcommon.hostapd_cli(config, "ping")
     if not ok or "PONG" not in out:
         problems.append("hostapd control interface unreachable -- "
-                        "session limits and rotation will not work")
+                        "passphrase rotation will not work")
     return problems

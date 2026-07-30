@@ -30,7 +30,7 @@ log = logging.getLogger("accesspoint")
 # dnsmasq binds to the interface address, and the guest-facing daemons come
 # last because they are useless until the network exists.
 RADIO_UNITS = ("hostapd", "dnsmasq")
-GUEST_UNITS = ("photobooth-rotate", "photobooth-sessions")
+GUEST_UNITS = ("photobooth-rotate",)
 # Never stopped by us: these serve the gallery over whatever network the Pi is
 # on and are harmless (and useful) with the AP down.
 ALWAYS_UNITS = ("photobooth-portal", "photobooth-ingest", "nginx")

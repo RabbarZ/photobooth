@@ -6,15 +6,18 @@ here hijacks DNS, answers OS connectivity probes, or claims the device must
 log in -- a phone on this network simply has no internet, and says so.
 
 nginx serves photos, thumbnails and the prebuilt zip directly; this app only
-renders the listing and tracks session activity.
+renders the listing.
+
+It keeps no state at all. It used to track per-device session activity to feed
+the hard and soft limits, which have been removed -- a guest's time is bounded
+by the passphrase ring instead, see config.yaml.
 """
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
-from flask import (Flask, g, jsonify, redirect, render_template, request)
+from flask import Flask, jsonify, redirect, render_template, request
 
 import pbcommon
 
@@ -28,19 +31,6 @@ app = Flask(__name__)
 # per-request plumbing
 # --------------------------------------------------------------------------
 
-def db():
-    if "db" not in g:
-        g.db = pbcommon.connect(CONFIG)
-    return g.db
-
-
-@app.teardown_appcontext
-def _close_db(_exc):
-    conn = g.pop("db", None)
-    if conn is not None:
-        conn.close()
-
-
 def client_ip() -> str:
     """The guest's address. nginx sets X-Real-IP; fall back to the peer."""
     return request.headers.get("X-Real-IP") or request.remote_addr or ""
@@ -48,14 +38,6 @@ def client_ip() -> str:
 
 def client_mac() -> str | None:
     return pbcommon.mac_for_ip(client_ip())
-
-
-def touch_session() -> str | None:
-    """Count this request as activity, resetting the idle timer."""
-    mac = client_mac()
-    if mac:
-        pbcommon.record_activity(db(), mac)
-    return mac
 
 
 # --------------------------------------------------------------------------
@@ -87,14 +69,9 @@ def zip_info() -> dict | None:
 
 @app.route("/")
 def gallery():
-    touch_session()
-    # No zip_file/grace_minutes: the page offers per-photo saving only. The zip
-    # itself still exists -- see /api/download-all.
-    return render_template(
-        "gallery.html",
-        photos=list_photos(),
-        heartbeat_seconds=int(CONFIG["session"]["heartbeat_interval_seconds"]),
-    )
+    # No zip_file: the page offers per-photo saving only. The zip itself still
+    # exists -- see /api/download-all.
+    return render_template("gallery.html", photos=list_photos())
 
 
 @app.get("/captive-api")
@@ -113,7 +90,6 @@ def captive_api():
     The media type is mandatory: a generic application/json is ignored and the
     device falls back to probing, which looks exactly like this not working.
     """
-    touch_session()
     body = jsonify({
         "captive": True,
         # Where Android opens its login browser.
@@ -124,58 +100,33 @@ def captive_api():
     return body
 
 
-@app.post("/api/heartbeat")
-def heartbeat():
-    """Called by the open gallery page; resets the soft-limit timer."""
-    mac = touch_session()
-    return jsonify({"ok": True, "identified": mac is not None})
-
-
 @app.post("/api/download-all")
 def download_all():
-    """Register a grace window, then hand back the static zip URL.
-
-    A ~500 MB transfer on this radio takes minutes and can easily outlive the
-    page that started it -- phone locks, browser is backgrounded, heartbeats
-    stop. Relying on the client-side heartbeat alone would kick the guest
-    mid-download, so the grace window is recorded server-side instead.
+    """Hand back the static zip URL.
 
     No longer reachable from the gallery: the "Download all" button was taken
     out, so guests save photos individually. Kept because the zip is still
     built by ingest.py and still served by nginx at /all-photos.zip, and
     anyone fetching that URL directly -- the operator collecting the evening's
-    photos, most likely -- needs the same protection from the idle kick.
+    photos, most likely -- may want to discover it programmatically.
+
+    This used to register a server-side grace window so a long transfer was not
+    cut short by the idle kick. There is no idle kick any more, so there is
+    nothing to suppress. Note that a rotation still deauthenticates everyone
+    briefly, which a download has always had to survive.
     """
-    mac = touch_session()
-    grace = float(CONFIG["session"]["bulk_download_grace_minutes"]) * 60
-    until = pbcommon.grant_grace(db(), mac, grace) if mac else 0.0
-    return jsonify({
-        "ok": True,
-        "url": "/all-photos.zip",
-        "grace_seconds": int(grace) if mac else 0,
-        "grace_until": until,
-        "identified": mac is not None,
-    })
+    return jsonify({"ok": True, "url": "/all-photos.zip"})
 
 
 @app.get("/api/status")
 def status():
     """Small diagnostic view -- handy when tuning, not used by the page."""
-    mac = client_mac()
-    sessions = pbcommon.all_sessions(db())
-    now = time.time()
-    mine = sessions.get(mac or "", {})
     return jsonify({
         "ip": client_ip(),
-        "mac": mac,
+        "mac": client_mac(),
         "photos": len(list_photos()),
         "zip": zip_info(),
-        "session": {
-            "age_seconds": round(now - mine["first_seen"]) if mine else None,
-            "idle_seconds": round(now - mine["last_activity"]) if mine else None,
-            "grace_remaining": max(0, round(mine.get("grace_until", 0) - now)) if mine else 0,
-        },
-        "active_sessions": len(sessions),
+        "associated_stations": len(pbcommon.associated_stations(CONFIG)),
     })
 
 

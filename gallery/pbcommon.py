@@ -1,8 +1,7 @@
-"""Shared config loading, client identification and session state.
+"""Shared config loading, client identification and hostapd control.
 
-State lives in SQLite on /run (tmpfs) rather than a file on the SD card: it is
-rewritten every few seconds and none of it needs to survive a reboot, so
-keeping it off the card avoids pointless flash wear.
+There is no session database here any more. It existed to drive the hard and
+soft session limits, which were removed -- see the note in config.yaml.
 """
 
 from __future__ import annotations
@@ -10,9 +9,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
-import sqlite3
 import subprocess
-import time
 from pathlib import Path
 
 import yaml
@@ -65,121 +62,6 @@ def write_overrides(overlay: dict) -> Path:
 
 def clear_overrides() -> None:
     OVERRIDE_PATH.unlink(missing_ok=True)
-
-
-def state_path(config: dict) -> Path:
-    return Path(config["portal"]["state_dir"]) / "sessions.db"
-
-
-# --------------------------------------------------------------------------
-# session state
-# --------------------------------------------------------------------------
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS sessions (
-    mac           TEXT PRIMARY KEY,
-    first_seen    REAL NOT NULL,
-    last_activity REAL NOT NULL,
-    grace_until   REAL NOT NULL DEFAULT 0
-);
-"""
-
-
-def connect(config: dict) -> sqlite3.Connection:
-    """Open the state database, creating it if needed.
-
-    WAL plus a busy timeout so the portal (several gunicorn workers) and the
-    session manager can touch it concurrently without tripping over each other.
-    """
-    path = state_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=5.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.executescript(SCHEMA)
-    _share_state_files(path)
-    return conn
-
-
-def _share_state_files(path: Path) -> None:
-    """Keep the state DB writable by both the portal and the session manager.
-
-    They run as different users -- the portal as `pi`, the session manager as
-    root because it drives hostapd_cli. Whichever creates the database first
-    owns it, and SQLite needs write access to the -wal and -shm sidecars too,
-    not just the .db. Left alone, a root-created database makes every portal
-    request fail with "attempt to write a readonly database", which surfaces
-    to guests as an Internal Server Error on the gallery page.
-
-    Only root can hand ownership over, so this is a no-op for the portal.
-    """
-    if os.geteuid() != 0:
-        return
-    try:
-        owner = path.parent.stat()
-        for suffix in ("", "-wal", "-shm"):
-            sidecar = Path(str(path) + suffix)
-            if sidecar.exists():
-                os.chown(sidecar, owner.st_uid, owner.st_gid)
-                os.chmod(sidecar, 0o664)
-    except OSError:
-        pass  # best effort: never stop the daemon over file ownership
-
-
-def record_activity(conn: sqlite3.Connection, mac: str, now: float | None = None) -> None:
-    """Note a portal request from `mac`, creating the session if it is new."""
-    now = now if now is not None else time.time()
-    with conn:
-        conn.execute(
-            "INSERT INTO sessions (mac, first_seen, last_activity) VALUES (?, ?, ?) "
-            "ON CONFLICT(mac) DO UPDATE SET last_activity=excluded.last_activity",
-            (mac, now, now))
-
-
-def ensure_session(conn: sqlite3.Connection, mac: str, now: float | None = None) -> None:
-    """Register an associated station without counting it as portal activity.
-
-    Used by the session manager: association starts the hard-limit clock, but
-    a device that never opens the gallery should still hit the idle limit.
-    """
-    now = now if now is not None else time.time()
-    with conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions (mac, first_seen, last_activity) "
-            "VALUES (?, ?, ?)", (mac, now, now))
-
-
-def grant_grace(conn: sqlite3.Connection, mac: str, seconds: float,
-                now: float | None = None) -> float:
-    """Suppress the idle kick for `mac` for `seconds`. Returns the deadline.
-
-    Never shortens an existing grace window.
-    """
-    now = now if now is not None else time.time()
-    until = now + seconds
-    with conn:
-        conn.execute(
-            "INSERT INTO sessions (mac, first_seen, last_activity, grace_until) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(mac) DO UPDATE SET "
-            "  grace_until = MAX(sessions.grace_until, excluded.grace_until),"
-            "  last_activity = excluded.last_activity",
-            (mac, now, now, until))
-    return until
-
-
-def all_sessions(conn: sqlite3.Connection) -> dict[str, dict]:
-    rows = conn.execute(
-        "SELECT mac, first_seen, last_activity, grace_until FROM sessions").fetchall()
-    return {r[0]: {"first_seen": r[1], "last_activity": r[2], "grace_until": r[3]}
-            for r in rows}
-
-
-def forget(conn: sqlite3.Connection, macs) -> None:
-    macs = [(m,) for m in macs]
-    if macs:
-        with conn:
-            conn.executemany("DELETE FROM sessions WHERE mac = ?", macs)
 
 
 # --------------------------------------------------------------------------
@@ -256,8 +138,3 @@ def associated_stations(config: dict) -> set[str]:
         return set()
     return {line.strip().lower() for line in out.splitlines()
             if MAC_RE.match(line.strip().lower())}
-
-
-def deauthenticate(config: dict, mac: str) -> bool:
-    ok, _ = hostapd_cli(config, "deauthenticate", mac)
-    return ok

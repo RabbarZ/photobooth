@@ -1,6 +1,6 @@
 # Photobooth gallery — single source of truth for every tunable.
 #
-# Read by: portal.py, session_manager.py, rotate_password.py, ingest.py, setup.sh
+# Read by: portal.py, rotate_password.py, ingest.py, setup.sh
 # After changing values under `access_point` or `limits`, re-run setup.sh so the
 # rendered hostapd/dnsmasq/nginx files pick them up. Everything else is read at
 # runtime; a `systemctl restart photobooth-*` is enough.
@@ -26,7 +26,7 @@ access_point:
 
 password:
   # How often a NEW passphrase is minted and the QR redrawn.
-  rotate_interval_minutes: 10
+  rotate_interval_minutes: 5
 
   # How many passphrases hostapd accepts at once (a rolling key ring).
   #
@@ -39,7 +39,7 @@ password:
   # 1 restores the old single-key behaviour. Raising it widens the window in
   # which an already-departed guest could still rejoin on a cached key, so it
   # trades strictness for not stranding people. 3 is a sensible default.
-  valid_passphrases: 3
+  valid_passphrases: 4
 
   length: 12
   psk_file: /etc/hostapd/photobooth.psk
@@ -53,18 +53,21 @@ password:
   portal_qr_path: /var/lib/photobooth/portal-qr.png
   password_path: /var/lib/photobooth/current-password.txt
 
-session:
-  # Wall-clock cap from first association.
-  hard_limit_minutes: 30
-  # Idle cap: no portal request (page load or heartbeat) for this long -> kick.
-  # Deliberately generous, because bulk downloads are slow on this radio.
-  soft_limit_minutes: 5
-  # A bulk download can outlive the page that started it, so starting one
-  # registers a server-side grace window that suppresses the idle kick.
-  bulk_download_grace_minutes: 10
-  poll_interval_seconds: 10
-  # Gallery page posts a heartbeat this often while open.
-  heartbeat_interval_seconds: 30
+# There are deliberately no session limits. There used to be a hard (wall
+# clock) and a soft (idle) timer enforced by deauthenticating stations, and
+# both were removed because they could not do what they claimed: a deauth
+# without key expiry is a one-second inconvenience -- a phone reassociates on
+# its cached passphrase almost immediately, which was measured, not assumed.
+#
+# What actually bounds a guest's session is the key ring above. Every rotation
+# deauthenticates everyone so they re-key, and a guest can only come back while
+# the passphrase they scanned is still in the ring. That gives a natural cap of
+# up to valid_passphrases x rotate_interval_minutes -- 30 minutes as configured
+# -- measured from when their code was minted rather than when they scanned it,
+# so 20-30 minutes in practice.
+#
+# The practical consequence: to change how long guests get, change the two
+# password settings above. Nothing else caps it.
 
 gallery:
   photo_dir: /home/pi/repos/photobooth/photos
@@ -94,4 +97,6 @@ portal:
   # using on 1 GB -- see README, RAM is the binding constraint on this box.
   bind: 127.0.0.1:8080
   workers: 2
-  state_dir: /run/photobooth
+  # /run/photobooth still exists on tmpfs -- main.py writes its runtime
+  # overrides there -- but the portal no longer keeps a database of its own,
+  # so there is nothing here to point at.

@@ -66,8 +66,8 @@ rsn_pairwise=CCMP
 # rescanning the QR always gets a working password. See rotate_password.py.
 wpa_psk_file=@PSK_FILE@
 
-# Control socket for hostapd_cli: needed by both the rotator (RELOAD_WPA_PSK)
-# and the session manager (list_sta / deauthenticate).
+# Control socket for hostapd_cli: needed by the rotator (RELOAD_WPA_PSK) and
+# by main.py --watch-clients (list_sta).
 ctrl_interface=/var/run/hostapd
 ctrl_interface_group=0
 
