@@ -25,7 +25,7 @@ access_point:
 
 password:
   # How often a NEW passphrase is minted and the QR redrawn.
-  rotate_interval_minutes: 30
+  rotate_interval_minutes: 10
 
   # How many passphrases hostapd accepts at once (a rolling key ring).
   #
