@@ -17,6 +17,7 @@ import math
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -26,12 +27,33 @@ from trigger import DEFAULT_BOUNCE_S, DEFAULT_BUTTON_PIN, Event, Trigger
 # Seconds between pressing the trigger and the shutter firing.
 DEFAULT_COUNTDOWN_S = 3.0
 
+# Shown on the booth screen when a shot fails. German, because the guests and
+# the person running the booth read the screen, not the log. Two messages
+# because the two failures need different things done to them: a camera that
+# answers but will not fire has a dialog waiting on its own screen, whereas an
+# absent one is switched off or out of PC Remote mode.
+NOT_READY_MESSAGE = "Kamera nicht bereit - bitte Hinweis an der Kamera bestätigen"
+NO_CAMERA_MESSAGE = "Keine Kamera gefunden - bitte Kamera einschalten"
+
+# How long either message stays up before the screen goes back to the last photo.
+NOT_READY_MESSAGE_S = 5.0
+
+# How long a shot may take before the screen stops promising a photo.
+#
+# Measured on this camera: a healthy capture costs about 3.7s, rising to a
+# consistent 6.8s for the first shot after a connect, which pays for autofocus
+# and session warm-up. 12s clears that with room for a slow autofocus or a
+# RAW+JPEG pair, and is still far inside the 20-40s libgphoto2 needs to report
+# a blocked shutter. Set it too low and every first shot flashes a warning it
+# then has to take back.
+CAPTURE_SLOW_S = 12.0
+
 # The A7 III sleeps after 30 minutes at most and cannot be set to never
 # sleep, so nudge it well inside that window while nobody is shooting.
 KEEPALIVE_INTERVAL_S = 120.0
 
-# A camera that reconnects cleanly but then fails every operation would
-# otherwise have us reconnecting forever. Bail out instead.
+# After this many failures in a row, say plainly in the log that the camera
+# itself needs looking at. The booth keeps running either way.
 MAX_CONSECUTIVE_FAILURES = 3
 
 
@@ -118,6 +140,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def report_not_ready(reason: str, notify,
+                     message: str = NOT_READY_MESSAGE) -> None:
+    """Say on the screen that no photo was taken, with the detail in the log."""
+    print(f"  !! {reason}", file=sys.stderr)
+    notify(f"WARNING {message}")
+    time.sleep(NOT_READY_MESSAGE_S)
+    notify("CLEAR")
+
+
 def shoot(camera: Camera, countdown_s: float = 0.0, notify=None) -> bool:
     """Count down, then take one photo. False if the camera needs reconnecting.
 
@@ -133,13 +164,49 @@ def shoot(camera: Camera, countdown_s: float = 0.0, notify=None) -> bool:
     countdown(countdown_s, tick=tick)
     print("Capturing...")
     notify("MESSAGE Aufnahme...")
-    try:
-        for path in camera.capture():
-            print(f"  -> {path}")
-        return True
-    except CameraError as err:
-        print(f"  !! {err}", file=sys.stderr)
+
+    saved: list = []
+    failure: list[CameraError] = []
+
+    def work() -> None:
+        try:
+            saved.extend(camera.capture())
+        except CameraError as err:
+            failure.append(err)
+
+    # The capture runs on a worker so this thread is free to update the
+    # screen while it is stuck. The camera is touched from the worker alone,
+    # and the worker is always joined below -- never abandoned. Tearing the
+    # session down under an in-flight capture wedges the camera so thoroughly
+    # that only a power cycle brings it back.
+    worker = threading.Thread(target=work, name="capture", daemon=True)
+    worker.start()
+    worker.join(CAPTURE_SLOW_S)
+
+    warned = worker.is_alive()
+    if warned:
+        # A shot that has not landed by now is not going to. libgphoto2 still
+        # needs the best part of a minute to admit it, and leaving "Aufnahme..."
+        # up for all of that tells the guest to keep smiling at a dead camera.
+        print("Camera is not responding to the shutter.", file=sys.stderr)
+        notify(f"WARNING {NOT_READY_MESSAGE}")
+        worker.join()
+
+    if failure:
+        print(f"  !! {failure[0]}", file=sys.stderr)
+        if not warned:
+            notify(f"WARNING {NOT_READY_MESSAGE}")
+            time.sleep(NOT_READY_MESSAGE_S)
+        notify("CLEAR")
         return False
+
+    for path in saved:
+        print(f"  -> {path}")
+    if warned:
+        # It came good in the end: drop the warning rather than leaving it to
+        # sit next to the photo that just proved it wrong.
+        notify("CLEAR")
+    return True
 
 
 def viewer_options(args) -> list[str]:
@@ -188,8 +255,11 @@ def start_viewer(output_dir, extra_options=()) -> subprocess.Popen | None:
 
     try:
         # stdin is the command channel: countdown digits go down this pipe.
+        # Pinned to UTF-8 rather than the locale's encoding -- under systemd
+        # or sudo that can still be ASCII, which would choke on the umlauts in
+        # the German messages exactly when one needs to be shown.
         return subprocess.Popen(command, stdin=subprocess.PIPE, text=True,
-                                env=env)
+                                encoding="utf-8", env=env)
     except OSError as err:
         print(f"Could not start the viewer: {err}", file=sys.stderr)
         return None
@@ -241,7 +311,11 @@ def stop_viewer(viewer: subprocess.Popen, notify) -> None:
 
 
 def reconnect(camera: Camera) -> bool:
-    """Rebuild a dead session. False means the camera is really gone."""
+    """Rebuild a dead session. False means the camera would not come back.
+
+    Failing is not fatal -- the booth stays up and simply tries again on the
+    next press, by which time the camera may have been sorted out.
+    """
     print("Reconnecting...", file=sys.stderr)
     camera.disconnect()
     try:
@@ -273,9 +347,17 @@ def run(args) -> int:
                           delete_after_download=args.delete_after_download)
     try:
         camera.connect()
+        connected = True
     except CameraError as err:
+        # Not fatal outside --once. A camera that is asleep, switched off, or
+        # in the wrong USB mode is fixed at the camera, and the booth exiting
+        # would take the screen and the guest Wi-Fi down with it -- so it
+        # starts anyway, says so on screen, and picks the camera up on the
+        # first press after someone sorts it out.
         print(err, file=sys.stderr)
-        return 1
+        connected = False
+        if args.once:
+            return 1
 
     viewer = (start_viewer(args.output_dir, viewer_options(args))
               if args.display else None)
@@ -302,24 +384,45 @@ def run(args) -> int:
                     return 0
 
                 if event is Event.TRIGGER:
-                    succeeded = shoot(camera, args.countdown, notify)
+                    # With no session there is nothing to shoot through, so
+                    # try to get one first -- this is the press right after
+                    # someone woke the camera or fixed its USB mode.
+                    if not connected:
+                        connected = reconnect(camera)
+                    if connected:
+                        succeeded = shoot(camera, args.countdown, notify)
+                    else:
+                        report_not_ready("No camera to shoot with.", notify,
+                                         NO_CAMERA_MESSAGE)
+                        succeeded = False
                     trigger.drain()  # drop triggers mashed during the countdown
-                else:
+                elif connected:
                     succeeded = camera.ping()
+                else:
+                    # Idle with no camera: keep trying quietly in the
+                    # background so it is already up by the time anyone presses.
+                    connected = reconnect(camera)
+                    continue
 
                 if succeeded:
                     failures = 0
                     continue
 
                 # A failure usually means the session died (camera slept, cable
-                # knocked). Try to get it back, but do not retry forever.
+                # knocked, a dialog left the shutter unresponsive). Rebuild the
+                # session so the next press has a clean one to work with.
+                #
+                # Never give up and exit, however long it stays broken: the
+                # booth is unattended and the cure is at the camera, so quitting
+                # would only mean nobody notices until the event is over. Once
+                # the camera is dealt with, the next press just works.
                 failures += 1
                 if failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"Camera failed {failures} times in a row -- giving up.",
+                    print(f"Camera has failed {failures} times in a row. Still "
+                          f"listening -- check the camera is on, set to PC "
+                          f"Remote, and has no dialog waiting on its screen.",
                           file=sys.stderr)
-                    return 1
-                if not reconnect(camera):
-                    return 1
+                connected = reconnect(camera)
     except KeyboardInterrupt:
         print()
         return 0

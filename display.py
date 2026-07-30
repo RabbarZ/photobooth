@@ -88,12 +88,24 @@ POLL_INTERVAL_S = 0.3
 BACKGROUND = (0, 0, 0)
 TEXT_COLOUR = (110, 110, 110)
 COUNTDOWN_COLOUR = (245, 245, 245)
+# Warnings are for the person running the booth to catch across the room, so
+# they get full brightness and a colour that reads as a fault rather than the
+# muted grey of ordinary status text.
+WARNING_COLOUR = (228, 82, 72)
+
+# Keeps wrapped text off the very edge of the panel.
+MESSAGE_MARGIN = 48
+
+# Gap between the QR plate and the screen edges. Shared with the message
+# layout, which reserves the plate's footprint so text is never drawn under it.
+BADGE_MARGIN = 24
 
 # Commands accepted on stdin, one per line. booth.py sends these down the
 # pipe it already owns, so the countdown appears on screen the instant the
 # trigger fires rather than only in the console.
 #   COUNTDOWN <n>   big number, centred
 #   MESSAGE <text>  smaller text, centred
+#   WARNING <text>  the same, in amber: something needs attention
 #   CLEAR           go back to showing the latest photo
 #   QUIT            shut down
 #
@@ -351,7 +363,8 @@ class BadgePanel:
             self._panel = self._compose()
         return self._panel
 
-    def blit_onto(self, screen: pygame.Surface, margin: int = 24) -> None:
+    def blit_onto(self, screen: pygame.Surface,
+                  margin: int = BADGE_MARGIN) -> None:
         panel = self.surface()
         if panel is None:
             return
@@ -368,6 +381,66 @@ def _font(size: int) -> pygame.font.Font:
     return _FONT_CACHE[size]
 
 
+def _wrap(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
+    """Break `text` into lines that fit inside max_width."""
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}".strip()
+        if current and font.size(candidate)[0] > max_width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    return lines + [current] if current else lines or [""]
+
+
+def render_message(text: str, size: int, colour, max_width: int,
+                   max_height: int | None = None) -> pygame.Surface:
+    """Centred, wrapped text on a transparent plate.
+
+    Messages are written for a person, not for a layout, so they are long
+    enough to run off the side of the screen. Wrap first, then shrink until
+    the block fits both the width and, where one is given, the height it has
+    been allotted.
+    """
+    while True:
+        font = _font(size)
+        lines = _wrap(text, font, max_width)
+        too_wide = max(font.size(line)[0] for line in lines) > max_width
+        too_tall = (max_height is not None
+                    and font.get_linesize() * len(lines) > max_height)
+        if size <= 24 or not (too_wide or too_tall):
+            break
+        size = max(24, int(size * 0.8))
+
+    surfaces = [font.render(line, True, colour) for line in lines]
+    width = max(surface.get_width() for surface in surfaces)
+    step = font.get_linesize()
+    plate = pygame.Surface((width, step * len(surfaces)), pygame.SRCALPHA)
+    for index, surface in enumerate(surfaces):
+        plate.blit(surface, ((width - surface.get_width()) // 2, index * step))
+    return plate
+
+
+def text_area(screen: pygame.Surface,
+              badge: "BadgePanel | None") -> pygame.Rect:
+    """The part of the screen a message may use without hiding under the QRs.
+
+    The badge plate is drawn last and so wins every overlap; a warning nobody
+    can read because a QR is sitting on top of it is worse than no warning.
+    The plate lives in the bottom-right corner, so messages take the band
+    above it -- which keeps them horizontally centred, unlike squeezing them
+    into the column beside it.
+    """
+    area = screen.get_rect()
+    panel = badge.surface() if badge is not None else None
+    if panel is not None:
+        area.height = max(area.height // 3,
+                          area.height - panel.get_height() - 2 * BADGE_MARGIN)
+    return area
+
+
 def draw_overlay(screen: pygame.Surface, kind: str, value: str,
                  badge: "BadgePanel | None" = None) -> None:
     """Draw a countdown digit or a short message, centred on black."""
@@ -376,9 +449,14 @@ def draw_overlay(screen: pygame.Surface, kind: str, value: str,
     if kind == "count":
         surface = _font(max(64, height * 2 // 3)).render(
             value, True, COUNTDOWN_COLOUR)
+        area = screen.get_rect()
     else:
-        surface = _font(max(32, height // 10)).render(value, True, TEXT_COLOUR)
-    screen.blit(surface, surface.get_rect(center=screen.get_rect().center))
+        colour = WARNING_COLOUR if kind == "warning" else TEXT_COLOUR
+        area = text_area(screen, badge)
+        surface = render_message(value, max(32, height // 10), colour,
+                                 area.width - 2 * MESSAGE_MARGIN,
+                                 area.height - 2 * MESSAGE_MARGIN)
+    screen.blit(surface, surface.get_rect(center=area.center))
     # The QR stays up during the countdown too: a guest waiting for the shutter
     # is exactly who has a spare moment to scan it.
     if badge is not None:
@@ -392,8 +470,11 @@ def draw(screen: pygame.Surface, surface: pygame.Surface | None,
     if surface is not None:
         screen.blit(surface, surface.get_rect(center=screen.get_rect().center))
     elif message:
-        text = _font(48).render(message, True, TEXT_COLOUR)
-        screen.blit(text, text.get_rect(center=screen.get_rect().center))
+        area = text_area(screen, badge)
+        text = render_message(message, 48, TEXT_COLOUR,
+                              area.width - 2 * MESSAGE_MARGIN,
+                              area.height - 2 * MESSAGE_MARGIN)
+        screen.blit(text, text.get_rect(center=area.center))
     if badge is not None:
         badge.blit_onto(screen)
     pygame.display.flip()
@@ -501,6 +582,8 @@ def main() -> int:
                 overlay = ("count", rest.strip())
             elif verb == "MESSAGE":
                 overlay = ("message", rest.strip())
+            elif verb == "WARNING":
+                overlay = ("warning", rest.strip())
             elif verb == "CLEAR":
                 overlay = None
                 draw(screen, surface, "Warte auf das erste Foto..."
