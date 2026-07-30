@@ -4,12 +4,37 @@ interface=@INTERFACE@
 driver=nl80211
 ssid=@SSID@
 
-# 2.4 GHz only. hw_mode=g plus ieee80211n=1 gives 802.11n on the 2.4 GHz band,
-# which is all the BCM43438 has.
+# 2.4 GHz. hw_mode=g plus ieee80211n=1 gives 802.11n on this band.
+#
+# The radio (BCM4345/6, i.e. CYW43455) is dual-band and does support VHT on
+# 5 GHz, but VHT is a 5 GHz-only mode by specification, so ieee80211ac has no
+# meaning while hw_mode=g and hostapd rejects it here. Moving to 5 GHz would
+# mean hw_mode=a and a 5 GHz channel, trading this band's range and wall
+# penetration -- which is what gets a phone at the far side of a room onto the
+# gallery -- for width the single antenna cannot really use. There is no HE
+# (802.11ax) or EHT (802.11be) capability in this chip at all, so those cannot
+# be enabled at any setting.
 hw_mode=g
 channel=@CHANNEL@
 ieee80211n=1
 wmm_enabled=1
+
+# Refuse anything older than 802.11n.
+#
+# One associated b/g station puts the whole BSS into legacy protection: every
+# frame gets a CTS-to-self or RTS/CTS preamble at a legacy rate, and the cost
+# is paid by every other station, not just the old one. On a single-antenna
+# radio serving a room full of phones that is the difference between a gallery
+# that loads and one that stalls.
+#
+# require_ht makes hostapd reject association outright from a station that
+# cannot do HT. The rate list is the other half: dropping the four 802.11b
+# DSSS rates (1, 2, 5.5, 11 Mbps) means the AP never advertises them, so b-only
+# clients see nothing to join and beacons stop going out at 1 Mbps. Rates are
+# in units of 100 kbps, and basic_rates must be a subset of supported_rates.
+require_ht=1
+supported_rates=60 90 120 180 240 360 480 540
+basic_rates=60 120 240
 
 # 20 MHz channels only, deliberately. 40 MHz on 2.4 GHz overlaps two of the
 # three usable channels and, on a single-antenna chip in a crowded room, loses

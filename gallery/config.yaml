@@ -12,9 +12,10 @@ access_point:
   # and a crowded channel hurts far more than anything else you can tune here.
   channel: 6
   country_code: CH
-  # The onboard BCM43438 is a single-antenna 802.11n chip. It degrades badly
-  # past a handful of *active* clients, so keep this low. Raising it does not
-  # give you more throughput, only more contention.
+  # The onboard radio is a single-antenna BCM4345/6 (CYW43455): 802.11n here on
+  # 2.4 GHz, 802.11ac only if moved to 5 GHz, and no 802.11ax/be at all. It
+  # degrades badly past a handful of *active* clients, so keep this low.
+  # Raising it does not give you more throughput, only more contention.
   max_num_sta: 10
   address: 10.42.0.1
   prefix_length: 24
