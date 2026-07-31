@@ -25,7 +25,7 @@ from camera import Camera, CameraError, DEFAULT_OUTPUT_DIR, MockCamera
 from trigger import DEFAULT_BOUNCE_S, DEFAULT_BUTTON_PIN, Event, Trigger
 
 # Seconds between pressing the trigger and the shutter firing.
-DEFAULT_COUNTDOWN_S = 3.0
+DEFAULT_COUNTDOWN_S = 5.0
 
 # Shown on the booth screen when a shot fails. German, because the guests and
 # the person running the booth read the screen, not the log. Two messages
