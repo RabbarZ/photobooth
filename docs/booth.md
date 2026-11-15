@@ -90,9 +90,11 @@ moved between firmware 2.x and 3.x, so look for the cluster, not a page.)
    full list is 30 Min / 5 Min / 2 Min / 1 Min / 10 Sec, with no `Off`.
    Because you cannot disable it outright, `booth.py` sends a keep-alive
    while idle; see below.
-4. **Shoot JPEG-only** unless you want RAW. RAW+JPEG produces two files per
-   shot and makes every download several times longer, and the gallery only
-   shows JPEGs anyway.
+4. **Quality: JPEG only.** You don't have to set this: the booth sets the
+   camera's Quality to `booth.image_quality` in config.yaml (`Standard`) on
+   every connect, and logs a warning when it had to change it. RAW would only
+   make each download several times longer, and the gallery shows JPEGs
+   anyway.
 5. Use the camera's **DATA** USB port (the Type-C / micro-B data port), not a
    charge-only port, and a cable known to carry data.
 
@@ -155,8 +157,7 @@ countdown(3.0, tick=lambda n: gpio_flash(n))
 
 ### Focus
 
-Focus is entirely the camera's job — there is no focus logic in `camera.py`.
-But `capture()` is not a bare shutter release. For Sony bodies the libgphoto2
+`capture()` is not a bare shutter release. For Sony bodies the libgphoto2
 PTP driver:
 
 1. sets `PTP_DPC_SONY_AutoFocus` (the PTP equivalent of a half-press),
@@ -167,16 +168,35 @@ So the camera chooses *how* to focus, while the driver makes the shot
 *conditional* on focus succeeding. If AF never locks — dim lighting, a
 low-contrast backdrop, a guest inside the lens's minimum focus distance —
 the driver hits `Capture timed out` and you get **no photo at all**, surfaced
-as a `CameraError`. A dead trigger with a guest waiting is worse than a
-slightly soft frame, so configure to avoid it:
+as a `CameraError`, after a 39s hang (measured with the lens covered).
 
-- **Preferred: manual focus, prefocused.** Mark the spot guests stand on,
-  focus once, flick the lens to MF, tape the ring. Deterministic, fastest
-  (no AF round-trip per shot), and the shutter always fires. Shoot f/5.6-f/8
-  so small differences in where people stand stay sharp.
-- **If you want AF:** set `Priority Set in AF-S` to `Release` rather than `AF`
-  or `Balanced Emphasis`. The camera then fires without a lock — an occasional
-  soft frame instead of an occasional missing one.
+**What the booth does about it:** it half-presses the shutter
+(`Camera.start_focus()`, the `autofocus` action) when the countdown *starts*
+and releases it after the shot. The camera spends the countdown focusing, and
+by the time `capture()` runs, focus has either locked or the camera has given
+up, so the driver fires straight away. Measured on this A7 III at night with a
+5s countdown:
+
+| | focus locks | focus cannot lock (lens covered) |
+|---|---|---|
+| AF after countdown (old) | 4.7s to shutter | 39s hang, **no photo** |
+| AF during countdown (now) | 1.0s to shutter | 0.9s to shutter, photo taken |
+
+Prefocused shots were as sharp as the old ones. With `countdown_seconds: 0`
+there is no countdown to focus in, so the booth falls back to the old path,
+including its low-light hang.
+
+Note the trade-off: when focus truly cannot lock, the booth now gets a photo
+that may be soft, where before it got no photo after a long hang. It does not
+make bad light focusable. Leave `Priority Set in AF-S` at `AF`, which already
+gives the camera the whole countdown to lock, and fix the cause instead:
+
+- **Light the guests.** A constant light (LED panel) on the people, not just
+  the room, is what AF needs. Keep `AF Illuminator` on as a backup.
+- **Or focus manually, once.** Mark the spot guests stand on, focus there,
+  set MF and tape the ring. The shutter always fires and the spot is always
+  sharp. Shoot f/5.6-f/8 so small differences in where people stand stay
+  sharp.
 
 The driver exposes focus mode as a settable config (`AF-S`, `AF-C`, `AF-A`,
 `Manual`), so the Pi can enforce it rather than trusting that nobody bumped a

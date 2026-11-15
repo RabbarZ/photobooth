@@ -29,12 +29,14 @@ NOT_READY_MESSAGE_S = 5.0
 
 # How long a shot may take before the screen stops promising a photo.
 #
-# Measured on this camera: a healthy capture costs about 3.7s, rising to a
-# consistent 6.8s for the first shot after a connect, which pays for autofocus
-# and session warm-up. 12s clears that with room for a slow autofocus or a
-# RAW+JPEG pair, and is still far inside the 20-40s libgphoto2 needs to report
-# a blocked shutter. Set it too low and every first shot flashes a warning it
-# then has to take back.
+# Measured on this camera: with autofocus done during the countdown (see
+# Camera.start_focus) a capture costs about 1s, locked focus or not. Without
+# it, a capture cost 3.7-4.7s, 6.8s for the first shot after a connect, and
+# a 39s hang when focus could not lock. 12s clears the slow cases with room
+# for a RAW+JPEG pair, and is still far inside the 20-40s libgphoto2 needs to
+# report a blocked shutter -- which, now that low light no longer causes one,
+# almost always means a dialog on the camera. Set it too low and every first
+# shot flashes a warning it then has to take back.
 CAPTURE_SLOW_S = 12.0
 
 # After this many failures in a row, say plainly in the log that the camera
@@ -106,7 +108,19 @@ def shoot(camera: Camera, countdown_s: float, notify, messages: Messages) -> boo
         print_tick(remaining)
         notify(f"COUNTDOWN {remaining}")
 
-    countdown(countdown_s, tick=tick)
+    # Focus while the guests count down rather than after: the shutter then
+    # fires about a second after the last digit, even in light too dim for
+    # the lens to lock (see Camera.start_focus). With no countdown there is
+    # no time to win, so keep the plain path.
+    prefocus = countdown_s > 0
+    if prefocus:
+        camera.start_focus()
+    try:
+        countdown(countdown_s, tick=tick)
+    except BaseException:
+        if prefocus:
+            camera.end_focus()
+        raise
     print("Capturing...")
     if messages.capture:
         notify(f"MESSAGE {messages.capture}")
@@ -138,6 +152,10 @@ def shoot(camera: Camera, countdown_s: float, notify, messages: Messages) -> boo
         print("Camera is not responding to the shutter.", file=sys.stderr)
         notify(f"WARNING {messages.not_ready}")
         worker.join()
+
+    # Only once the worker is done: the camera is never used from two threads.
+    if prefocus:
+        camera.end_focus()
 
     if failure:
         print(f"  !! {failure[0]}", file=sys.stderr)
@@ -269,10 +287,14 @@ def run(config: dict, *, mock_camera: bool = False,
     keepalive_s = float(settings["keepalive_seconds"])
     gpio_pin = settings.get("gpio_pin")  # null in config.yaml: keyboard only
 
-    camera_class = MockCamera if mock_camera else Camera
-    camera = camera_class(output_dir=photo_dir,
-                          delete_after_download=bool(
-                              settings.get("delete_after_download", False)))
+    delete_after_download = bool(settings.get("delete_after_download", False))
+    if mock_camera:
+        camera = MockCamera(output_dir=photo_dir,
+                            delete_after_download=delete_after_download)
+    else:
+        camera = Camera(output_dir=photo_dir,
+                        delete_after_download=delete_after_download,
+                        image_quality=settings.get("image_quality"))
     try:
         camera.connect()
         connected = True

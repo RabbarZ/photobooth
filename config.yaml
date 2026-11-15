@@ -27,6 +27,11 @@ booth:
   keepalive_seconds: 120
   # Delete each photo from the camera's card once it is saved on the Pi.
   delete_after_download: false
+  # The camera's Quality setting, put back on every connect in case someone
+  # changed it on the camera. JPEG only: Standard, Fine or Extra Fine (RAW and
+  # RAW+JPEG also exist, but the gallery only shows JPEGs). null leaves the
+  # camera's setting alone.
+  image_quality: Standard
 
 screen:
   # Under the countdown digit. The lens sits below the screen, and guests stare

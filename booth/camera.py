@@ -16,6 +16,11 @@ log = logging.getLogger(__name__)
 
 # How long to keep listening for extra files after a shot. RAW+JPEG produces
 # two GP_EVENT_FILE_ADDED events, and the second one lags the first.
+#
+# Keep this even when shooting JPEG only. The A7 III sends a burst of events
+# for ~2.5s after every shot (capture complete, c201/c202, property changes),
+# and this wait is what reads them. Skipping it was tried: the next shot then
+# failed with "[-7] I/O problem" within one or two shots, pause or no pause.
 EXTRA_FILE_WAIT_S = 2.0
 
 
@@ -48,9 +53,11 @@ class Camera:
     """A connected camera. Use as a context manager, or call connect/disconnect."""
 
     def __init__(self, output_dir: Path | str,
-                 delete_after_download: bool = False) -> None:
+                 delete_after_download: bool = False,
+                 image_quality: str | None = None) -> None:
         self.output_dir = Path(output_dir)
         self.delete_after_download = delete_after_download
+        self.image_quality = image_quality
         self._camera: gp.Camera | None = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -70,6 +77,34 @@ class Camera:
             raise CameraError(_explain(err)) from err
         self._camera = camera
         log.info("Connected to %s", self.model())
+        if self.image_quality:
+            self._enforce_image_quality(self.image_quality)
+
+    def _enforce_image_quality(self, wanted: str) -> None:
+        """Put the camera's Quality setting back to `wanted` if it moved.
+
+        Done on every connect, so a dial bumped or a menu changed between
+        guests is undone by the next reconnect. Not fatal on failure: a photo
+        in the wrong format beats no photo at all.
+        """
+        cam = self._require()
+        try:
+            config = cam.get_config()
+            widget = config.get_child_by_name("imagequality")
+            current = widget.get_value()
+            if current == wanted:
+                return
+            choices = list(widget.get_choices())
+            if wanted not in choices:
+                log.error("image_quality %r is not one of %s; leaving it at %r",
+                          wanted, choices, current)
+                return
+            widget.set_value(wanted)
+            cam.set_config(config)
+            log.warning("Camera Quality was %r, set it back to %r",
+                        current, wanted)
+        except gp.GPhoto2Error as err:
+            log.warning("Could not set image quality: %s", _explain(err))
 
     def disconnect(self) -> None:
         if self._camera is not None:
@@ -103,6 +138,37 @@ class Camera:
         except gp.GPhoto2Error as err:
             log.warning("Keep-alive failed: %s", _explain(err))
             return False
+
+    # -- focus -------------------------------------------------------------
+
+    def start_focus(self) -> None:
+        """Half-press the shutter, so the camera focuses during the countdown.
+
+        Without this, libgphoto2's Sony driver only starts autofocus inside
+        capture(), after the countdown, and will not fire until the lens
+        locks. Measured on this A7 III at night: 4.7s from capture() to
+        shutter with a lock, and with no lock possible (lens covered, the
+        low-light case) a 39s hang ending in "[-1] Unspecified error" and no
+        photo. With the half-press held through a 5s countdown, capture()
+        fired in 0.9-1.0s in both cases, with no loss of sharpness when
+        focus was available.
+
+        Best effort: a camera that refuses it is shot the old way.
+        """
+        self._set_autofocus(1)
+
+    def end_focus(self) -> None:
+        """Release the half-press from start_focus()."""
+        self._set_autofocus(0)
+
+    def _set_autofocus(self, value: int) -> None:
+        try:
+            cam = self._require()
+            config = cam.get_config()
+            config.get_child_by_name("autofocus").set_value(value)
+            cam.set_config(config)
+        except (gp.GPhoto2Error, CameraError) as err:
+            log.warning("Could not set autofocus=%d: %s", value, err)
 
     # -- capture -----------------------------------------------------------
 
@@ -229,6 +295,12 @@ class MockCamera:
 
     def ping(self) -> bool:
         return self._connected
+
+    def start_focus(self) -> None:
+        pass
+
+    def end_focus(self) -> None:
+        pass
 
     def capture(self, basename: str | None = None) -> list[Path]:
         """Copy a random source photo under a new timestamped name."""
