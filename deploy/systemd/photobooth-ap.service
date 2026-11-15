@@ -8,7 +8,7 @@ Description=Photobooth AP interface address (wlan0)
 # sockets until the address exists, so start this before either of them.
 #
 # hostapd and dnsmasq are deliberately NOT bound to this unit (BindsTo): main.py
-# brings the interface up without it, and photobooth-booth Conflicts= with it,
+# brings the interface up without it, and photobooth.service Conflicts= with it,
 # so a binding would stop the booth whenever the radio started. Use
 # `accesspoint.py start`, which does all three in the right order.
 Wants=network.target

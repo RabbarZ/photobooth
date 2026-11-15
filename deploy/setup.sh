@@ -4,7 +4,8 @@
 #   sudo deploy/setup.sh
 #
 # Run it as the desktop user (the one created in Raspberry Pi Imager), with
-# sudo. Safe to run again after pulling changes or editing config.yaml.
+# sudo. Safe to run again, but only needed once: after pulling changes or
+# editing config.yaml, run deploy/deploy.sh instead.
 #
 # Installs packages, configures the host for tethered capture, renders config
 # from config.yaml, installs systemd units and builds the first QR. Does NOT
@@ -76,8 +77,8 @@ apt-get install -y --no-install-recommends \
 
 # hostapd ships masked and disabled on Debian; we drive it via our own config.
 systemctl unmask hostapd 2>/dev/null || true
-# Reset to a known state; the enables further down set the boot behaviour.
-systemctl disable --now hostapd 2>/dev/null || true
+# dnsmasq starts as soon as it is installed and would hold the DHCP/DNS ports.
+# accesspoint.py starts it when the AP comes up.
 systemctl disable --now dnsmasq 2>/dev/null || true
 
 # Everything the booth imports, checked as the user that will run it. A
@@ -242,25 +243,23 @@ systemctl reload nginx || systemctl restart nginx
 say "Installing systemd units"
 # The unit files themselves were written by render_configs.py above.
 systemctl daemon-reload
-# Portal and ingest are safe to run now — neither touches the radio. restart,
-# not just start, so a re-run picks up changed units and code.
-systemctl enable photobooth-portal.service photobooth-ingest.service >/dev/null
-systemctl restart photobooth-portal.service photobooth-ingest.service
-# The AP stack is deliberately NOT enabled for boot: main.py owns the guest
-# Wi-Fi lifecycle, bringing it up on start and taking it down on exit. Enabling
-# these would make the SSID appear at boot with no booth running, and would
-# make main.py's --no-wifi a lie.
+# Portal and ingest are safe to run now — neither touches the radio.
+systemctl enable --now photobooth-portal.service photobooth-ingest.service >/dev/null
+# The AP stack (photobooth-ap, photobooth-rotate, hostapd, dnsmasq) is
+# deliberately NOT enabled for boot: main.py owns the guest Wi-Fi lifecycle,
+# bringing it up on start and taking it down on exit. Enabling these would make
+# the SSID appear at boot with no booth running, and would make main.py's
+# --no-wifi a lie.
 #
 # Start them through accesspoint.py (main.py does), never one by one: it sets
 # the interface address before hostapd and dnsmasq, which is what stops an SSID
 # broadcasting with no DHCP server behind it.
-systemctl disable photobooth-ap.service photobooth-rotate.service \
-    hostapd.service dnsmasq.service >/dev/null 2>&1 || true
+#
 # The booth itself is enabled for boot but deliberately NOT started here: it is
 # what brings the AP up, and setup.sh promises to leave wlan0 (and your SSH
 # session) alone. It comes up on the next reboot, or on demand with
-# `systemctl start photobooth-booth`.
-systemctl enable photobooth-booth.service >/dev/null
+# `systemctl start photobooth`.
+systemctl enable photobooth.service >/dev/null
 echo "  portal + ingest running; booth enabled for boot; AP stack started by main.py"
 
 say "Done"
@@ -282,7 +281,10 @@ To try it now without rebooting (from the console, not over Wi-Fi SSH):
   sudo python3 $REPO_DIR/main.py
   sudo python3 $REPO_DIR/main.py --mock-camera   # no camera: needs a .jpg in $PHOTO_DIR
 
+After pulling changes or editing config.yaml, deploy with:
+  sudo $DEPLOY_DIR/deploy.sh
+
 Give wlan0 back to normal Wi-Fi:
-  sudo systemctl disable --now photobooth-booth
+  sudo systemctl disable --now photobooth
   sudo python3 $WIFI_DIR/accesspoint.py stop --release
 EOF

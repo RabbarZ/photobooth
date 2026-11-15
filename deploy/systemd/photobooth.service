@@ -26,7 +26,7 @@ User=root
 WorkingDirectory=@REPO_DIR@
 # --watch-clients: a line per guest joining, getting an address, opening the
 # gallery and saving a photo, plus a summary when the booth stops -- all in
-# `journalctl -u photobooth-booth`.
+# `journalctl -u photobooth`.
 ExecStart=/usr/bin/python3 main.py --watch-clients
 # Python buffers stdout when it is not a terminal; without this the log
 # arrives in bursts, or is lost if the process is killed.

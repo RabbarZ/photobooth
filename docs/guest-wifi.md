@@ -33,7 +33,7 @@ sudo python3 main.py --release-wifi      # on exit, hand wlan0 back to NetworkMa
 sudo python3 main.py --watch-clients     # live report of what guest devices do
 ```
 
-`setup.sh` also enables `photobooth-booth.service`, which runs `main.py` at
+`setup.sh` also enables `photobooth.service`, which runs `main.py` at
 boot. It does not start it, so your SSH session survives the install.
 
 `setup.sh` also renders a NetworkManager file that releases `wlan0`. It takes
@@ -57,7 +57,7 @@ python3 wifi/accesspoint.py status
 
 How long a guest gets is set by the passphrase ring: `rotate_interval_minutes`
 and `valid_passphrases` in the `password` section of `config.yaml`. Change
-them there and restart the booth (`sudo systemctl restart photobooth-booth`),
+them there and restart the booth (`sudo systemctl restart photobooth`),
 which restarts the rotator when it brings the Wi-Fi up.
 
 ## Configuration
@@ -72,9 +72,9 @@ sudo python3 deploy/render_configs.py --install          # then apply
 ```
 
 The units are rendered because they need the absolute path of the checkout.
-Changes under `access_point`, `limits` or `portal` need a re-render (`setup.sh`
-does it). Everything else is read when a daemon starts —
-`systemctl restart photobooth-*` is enough.
+Changes under `access_point`, `limits` or `portal` need a re-render
+(`sudo deploy/deploy.sh` does it and restarts everything). Everything else is
+read when a daemon starts — `systemctl restart 'photobooth*'` is enough.
 
 `gallery.photo_dir` may be relative, in which case it is relative to the repo
 root. The shipped value `photos` is the same directory the booth saves into by
@@ -84,7 +84,7 @@ default.
 
 | Unit | Runs as | Job | At boot |
 | --- | --- | --- | --- |
-| `photobooth-booth` | root | `main.py`: guest Wi-Fi, camera, screen | enabled |
+| `photobooth` | root | `main.py`: guest Wi-Fi, camera, screen | enabled |
 | `photobooth-portal` | booth user | gunicorn + Flask: the gallery page | enabled |
 | `photobooth-ingest` | booth user | gallery thumbnails, `Nice=10`, IO idle | enabled |
 | `photobooth-rotate` | root | rotates the passphrase, rewrites the join QR | started by the AP |
@@ -101,7 +101,7 @@ enabled by itself, the SSID would appear at boot with no booth behind it, and
 `--no-wifi` would not mean anything.
 
 `photobooth-ap` is for running the interface address under systemd without the
-booth. `photobooth-booth` declares `Conflicts=photobooth-ap`, so the interface
+booth. `photobooth` declares `Conflicts=photobooth-ap`, so the interface
 never has two owners.
 
 The order matters: hostapd running without the interface address gives an SSID
@@ -298,7 +298,7 @@ The booth service runs `main.py --watch-clients`, so one log tells the story
 of each guest:
 
 ```bash
-journalctl -fu photobooth-booth
+journalctl -fu photobooth
 ```
 
 ```
@@ -417,7 +417,7 @@ tail -f /var/log/nginx/photobooth-probes.log
 sudo tools/capture-ios.sh
 
 # Everything at once, while the booth runs (see Logs above)
-journalctl -fu photobooth-booth
+journalctl -fu photobooth
 ```
 
 ## Files

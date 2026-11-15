@@ -3,11 +3,11 @@
 # Read by everything (through pbcommon.py). main.py's flags only choose what
 # to run; anything you would tune for an event lives here.
 #
-# After changing values under `access_point`, `limits` or `portal`, re-run
-# deploy/setup.sh so the rendered hostapd/dnsmasq/nginx files and systemd units
-# pick them up. Everything else is read when a program starts:
-#   booth, screen        sudo systemctl restart photobooth-booth
-#   password, gallery    sudo systemctl restart photobooth-*
+# After any change, `sudo deploy/deploy.sh` re-renders the hostapd/dnsmasq/
+# nginx files and systemd units (needed for `access_point`, `limits`, `portal`)
+# and restarts everything. For the rest a restart is enough:
+#   booth, screen        sudo systemctl restart photobooth
+#   password, gallery    sudo systemctl restart 'photobooth*'
 
 booth:
   # Seconds between pressing the button and the shutter firing. 0 fires

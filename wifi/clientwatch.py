@@ -4,7 +4,7 @@ Exists because a guest's progress is invisible from the Pi: a phone can
 associate and get a lease and still never reach the gallery, and no single log
 distinguishes "they are saving photos" from "they joined and walked away".
 The booth service runs with this on, so the report lands in
-`journalctl -u photobooth-booth`.
+`journalctl -u photobooth`.
 
 This watches four sources and prints one line per event:
 

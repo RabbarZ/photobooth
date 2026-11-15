@@ -16,7 +16,6 @@ import grp
 import ipaddress
 import os
 import pwd
-import shutil
 import sys
 from pathlib import Path
 
@@ -138,15 +137,13 @@ def main() -> int:
     subs = substitutions(config)
     subs.update(user_substitutions(args.user or default_user()))
 
-    # (template, installed path, back up a foreign file first?)
-    jobs = [(TEMPLATES / name, system_path, True)
+    # (template, installed path)
+    jobs = [(TEMPLATES / name, system_path)
             for name, system_path in TARGETS.items()]
-    # Units are ours alone and systemd would try to make sense of a stray
-    # backup beside them, so they are overwritten without one.
-    jobs += [(unit, UNIT_TARGET_DIR / unit.name, False)
-             for unit in sorted(UNITS.glob("photobooth-*.service"))]
+    jobs += [(unit, UNIT_TARGET_DIR / unit.name)
+             for unit in sorted(UNITS.glob("photobooth*.service"))]
 
-    for template, system_path, backup in jobs:
+    for template, system_path in jobs:
         name = template.name
         if not template.exists():
             raise SystemExit(f"missing template: {template}")
@@ -161,10 +158,6 @@ def main() -> int:
         elif args.install:
             target = system_path
             target.parent.mkdir(parents=True, exist_ok=True)
-            # Keep one backup of anything we did not write ourselves.
-            if (backup and target.exists()
-                    and "render_configs.py" not in target.read_text()):
-                shutil.copy2(target, target.with_suffix(target.suffix + ".pre-photobooth"))
         else:
             print(f"--- would write {system_path} ---")
             continue
