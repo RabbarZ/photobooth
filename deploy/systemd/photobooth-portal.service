@@ -1,0 +1,30 @@
+# Rendered by render_configs.py from deploy/systemd/ -- edit that, not this.
+# The repo paths below are filled in with the location of the checkout.
+[Unit]
+Description=Photobooth gallery
+# Wants, not Requires: the gallery is still useful (and debuggable over the
+# LAN) even if the AP is not up yet.
+Wants=network.target
+After=network.target
+
+[Service]
+Type=exec
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@GALLERY_DIR@
+# Worker count and bind address come from config.yaml (portal.workers,
+# portal.bind). Threads rather than more workers: the app is IO-bound
+# (directory listings), and each extra worker is another interpreter.
+ExecStart=/usr/bin/gunicorn --workers @WORKERS@ --threads 4 \
+    --bind @PORTAL_BIND@ --timeout 30 --graceful-timeout 10 \
+    --access-logfile - --error-logfile - portal:app
+Restart=always
+RestartSec=2
+# Hardening: the gallery only ever reads photos and config.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

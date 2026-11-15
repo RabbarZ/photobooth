@@ -1,8 +1,4 @@
-"""Shared config loading, client identification and hostapd control.
-
-There is no session database here any more. It existed to drive the hard and
-soft session limits, which were removed -- see the note in config.yaml.
-"""
+"""Shared config loading, client identification and hostapd control."""
 
 from __future__ import annotations
 
@@ -14,54 +10,33 @@ from pathlib import Path
 
 import yaml
 
+# The repo root. This module sits there, beside config.yaml, because it is the
+# one thing wifi/, gallery/ and deploy/ all share. Their scripts put this
+# directory on sys.path before importing it.
+REPO_ROOT = Path(__file__).resolve().parent
+
 CONFIG_PATH = Path(os.environ.get(
-    "PHOTOBOOTH_CONFIG", Path(__file__).resolve().parent / "config.yaml"))
+    "PHOTOBOOTH_CONFIG", REPO_ROOT / "config.yaml"))
 
 DNSMASQ_LEASES = Path("/var/lib/misc/dnsmasq.leases")
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
 
-# Runtime overrides, written by main.py from its command line and merged on top
-# of config.yaml. On tmpfs so they vanish at reboot: a timer you passed for one
-# evening should not quietly become the permanent default.
-OVERRIDE_PATH = Path("/run/photobooth/overrides.yaml")
-
-
-def _merge(base: dict, overlay: dict) -> dict:
-    """Recursive dict merge; overlay wins at the leaves."""
-    out = dict(base)
-    for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _merge(out[key], value)
-        else:
-            out[key] = value
-    return out
-
-
-def load_config(path: Path | None = None, use_overrides: bool = True) -> dict:
-    with open(path or CONFIG_PATH) as handle:
+def load_config(path: Path | None = None) -> dict:
+    # UTF-8 explicitly: the screen texts have umlauts and arrows, and under
+    # systemd or sudo the locale can be plain ASCII.
+    with open(path or CONFIG_PATH, encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
-    if use_overrides and OVERRIDE_PATH.exists():
-        try:
-            overlay = yaml.safe_load(OVERRIDE_PATH.read_text()) or {}
-            config = _merge(config, overlay)
-        except (OSError, yaml.YAMLError):
-            pass  # a corrupt override must never stop the daemons starting
+
+    # A relative photo_dir is relative to the repo, not to whichever directory
+    # a daemon happened to start in. Resolved here, once, so ingest, the portal
+    # and the rendered nginx config all agree on the same absolute path.
+    gallery = config.get("gallery") or {}
+    photo_dir = gallery.get("photo_dir")
+    if photo_dir and not Path(photo_dir).is_absolute():
+        gallery["photo_dir"] = str(REPO_ROOT / photo_dir)
     return config
 
-
-def write_overrides(overlay: dict) -> Path:
-    """Persist runtime overrides for the daemons to pick up on restart."""
-    OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = OVERRIDE_PATH.with_suffix(".tmp")
-    tmp.write_text(yaml.safe_dump(overlay, default_flow_style=False))
-    os.replace(tmp, OVERRIDE_PATH)
-    os.chmod(OVERRIDE_PATH, 0o644)
-    return OVERRIDE_PATH
-
-
-def clear_overrides() -> None:
-    OVERRIDE_PATH.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------

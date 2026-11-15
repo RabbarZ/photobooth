@@ -1,0 +1,11 @@
+# Everything here runs on a Raspberry Pi, and is edited on Windows. Store and
+# check out every text file with LF line endings, whatever core.autocrlf says
+# on the machine doing the editing. A CRLF shell script fails on Linux with
+# "$'\r': command not found", and a CRLF systemd unit or nginx config can fail
+# in less obvious ways.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary

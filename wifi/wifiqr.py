@@ -81,7 +81,7 @@ def write_payload(path: Path, payload: str,
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         image.save(tmp)
-        os.chmod(tmp, 0o644)          # the display runs as pi, not root
+        os.chmod(tmp, 0o644)          # the display runs as the desktop user, not root
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -131,6 +131,8 @@ def main() -> int:
     ssid, passphrase = args.ssid, args.passphrase
     if ssid is None or passphrase is None:
         # Fall back to the live configuration and current rotated passphrase.
+        # pbcommon lives at the repo root, one level up.
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         import pbcommon
         config = pbcommon.load_config()
         ssid = ssid or config["access_point"]["ssid"]

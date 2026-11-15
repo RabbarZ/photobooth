@@ -2,9 +2,9 @@
 """Rotate the WPA passphrase and regenerate the Wi-Fi join QR.
 
 Why rotate at all: deauthenticating a device does not stop it reassociating a
-second later. Changing the passphrase does. A guest whose session ended has to
-rescan the QR, which is the whole gatekeeping mechanism -- so there is no MAC
-blocklist anywhere in this system.
+second later. Changing the passphrase does, once the old one has aged out of
+the ring. A guest whose code has aged out has to rescan the QR, which is the
+whole gatekeeping mechanism -- there is no MAC blocklist anywhere.
 
 Overlapping key ring
 --------------------
@@ -21,8 +21,8 @@ restarting this service does not invalidate everyone's cached passphrase.
 WHAT ROTATION DOES NOT DO: it does not evict anyone. A deauthenticated device
 reassociates immediately on its cached key -- measured at about one second.
 Rotation only affects devices re-authenticating after their key has aged out,
-which hits innocent guests as readily as departing ones. Since the session
-limits were removed, this ageing-out is the ONLY thing that ends a session.
+which hits innocent guests as readily as departing ones. This ageing-out is
+the ONLY thing that ends a session.
 
 CAVEAT: on hostapd 2.10, RELOAD_WPA_PSK returns OK and rereads the file, but the
 daemon still deauthenticates stations so they re-key. Every rotation therefore
@@ -42,8 +42,11 @@ import tempfile
 import time
 from pathlib import Path
 
-import pbcommon
-import wifiqr
+# pbcommon is shared with gallery/ and deploy/ and lives at the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pbcommon  # noqa: E402
+import wifiqr  # noqa: E402
 
 log = logging.getLogger("rotate")
 _running = True

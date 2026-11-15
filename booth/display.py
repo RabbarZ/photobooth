@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Fullscreen viewer: shows the newest photo until a newer one appears.
 
-    python3 display.py                  # watch the default photos/ directory
-    python3 display.py --dir /some/path
-    python3 display.py --fast           # quicker decode, slightly softer
+Started by booth.py, but also runs on its own for testing the screen:
 
-Runs as its own process, so a display fault can never stop the camera and
-pygame's event loop does not have to share a thread with the booth's wait.
-Press Esc or Q to quit.
+    python3 booth/display.py                # watch gallery.photo_dir
+    python3 booth/display.py --windowed     # in a window, not fullscreen
+
+Texts, sizes and the QR files come from the `screen` and `password` sections
+of config.yaml. Runs as its own process, so a display fault can never stop the
+camera and pygame's event loop does not have to share a thread with the
+booth's wait. Press Esc or Q to quit.
 """
 
 from __future__ import annotations
@@ -65,24 +67,11 @@ _discover_wayland()
 import pygame  # noqa: E402
 from PIL import Image, ImageOps  # noqa: E402
 
-DEFAULT_PHOTO_DIR = Path(__file__).resolve().parent / "photos"
+# pbcommon (config loading) lives at the repo root, one level up.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pbcommon  # noqa: E402
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
-
-# Written by the gallery's password rotator (gallery/rotate_password.py) and
-# rewritten in place on every rotation. Overlaying this path means the screen
-# always shows a QR that still works -- no coordination between the two
-# systems beyond the filename.
-DEFAULT_QR_PATH = Path("/var/lib/photobooth/wifi-qr.png")
-DEFAULT_QR_HEIGHT = 260
-DEFAULT_QR_CAPTION = "1. WLAN verbinde"
-
-# Written once at AP bring-up (gallery/accesspoint.py), never rotated: it
-# encodes the portal URL, not credentials. Scanning it opens the gallery
-# directly. Same size as the join QR: the two are one two-step instruction,
-# and a smaller second code read as optional when it is not -- but it is
-# useless before the phone is on the network, hence "2.".
-DEFAULT_PORTAL_QR_PATH = Path("/var/lib/photobooth/portal-qr.png")
-DEFAULT_PORTAL_QR_CAPTION = "2. Galerie ufmache"
 
 POLL_INTERVAL_S = 0.3
 BACKGROUND = (0, 0, 0)
@@ -104,32 +93,12 @@ MESSAGE_MARGIN = 48
 # layout, which reserves their footprint so text is never drawn under them.
 BADGE_MARGIN = 24
 
-# Vertical gap between the two QR plates. Each code sits on its own plate, so
-# this is the only thing tying the two steps together visually -- keep it small
-# enough that they still read as one instruction rather than two offers.
-DEFAULT_QR_GAP = 200
-
-# Caption size in pixels. A title, not a footnote: the caption has to be read
-# from where people are standing, which is much further away than the distance
-# at which a phone can actually resolve the code beneath it. Absolute rather
-# than derived from the QR height, so resizing the codes cannot quietly shrink
-# the words back into illegibility.
-DEFAULT_QR_CAPTION_SIZE = 42
-
-# Shown under the countdown. The lens sits below the display, so the moment a
-# guest most needs to look away from the screen is exactly the moment they are
-# most fixed on it -- and the resulting photos are all of people looking
-# slightly too high. The arrows do the work here: they point at the camera
-# whether or not the words get read inside the three seconds available.
-DEFAULT_CAMERA_HINT = "↓ Kamera isch do unde ↓"
-DEFAULT_CAMERA_HINT_SIZE = 128
-
 # Commands accepted on stdin, one per line. booth.py sends these down the
 # pipe it already owns, so the countdown appears on screen the instant the
 # trigger fires rather than only in the console.
 #   COUNTDOWN <n>   big number, centred
 #   MESSAGE <text>  smaller text, centred
-#   WARNING <text>  the same, in amber: something needs attention
+#   WARNING <text>  the same, in red: something needs attention
 #   CLEAR           go back to showing the latest photo
 #   QUIT            shut down
 #
@@ -203,8 +172,8 @@ def load_scaled(path: Path, screen_size: tuple[int, int],
     image = image.convert("RGB")
 
     # Resize in PIL and build the surface at its final size. Handing a
-    # 6 MP surface to pygame.transform.smoothscale instead costs ~5s on a
-    # Pi 3 -- several times the whole PIL path.
+    # 6 MP surface to pygame.transform.smoothscale instead is several times
+    # slower than the whole PIL path.
     target = fit_size(image.size, screen_size)
     if image.size != target:
         image = image.resize(target, Image.BILINEAR)
@@ -295,8 +264,7 @@ class BadgePanel:
     """
 
     def __init__(self, entries: "list[tuple[Path, str]]", height: int,
-                 gap: int = DEFAULT_QR_GAP,
-                 caption_size: int = DEFAULT_QR_CAPTION_SIZE) -> None:
+                 gap: int, caption_size: int) -> None:
         self.entries = entries
         self.height = height
         self.gap = gap
@@ -498,7 +466,7 @@ def text_area(screen: pygame.Surface,
 def draw_overlay(screen: pygame.Surface, kind: str, value: str,
                  badge: "BadgePanel | None" = None,
                  hint: str = "",
-                 hint_size: int = DEFAULT_CAMERA_HINT_SIZE) -> None:
+                 hint_size: int = 128) -> None:
     """Draw a countdown digit or a short message, centred on black.
 
     `hint` is the look-at-the-lens line, drawn under the countdown -- the one
@@ -517,7 +485,7 @@ def draw_overlay(screen: pygame.Surface, kind: str, value: str,
                                  area.width - 2 * MESSAGE_MARGIN,
                                  area.height - 2 * MESSAGE_MARGIN)
 
-    # Countdown only. By the time "Aufnahme..." is up the shutter has already
+    # Countdown only. By the time the capture message is up the shutter has already
     # gone, so the hint would be telling people where to look a moment too
     # late -- and pulling their eyes off the lens just as the next frame lands.
     banner = None
@@ -562,54 +530,26 @@ def draw(screen: pygame.Surface, surface: pygame.Surface | None,
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dir", type=Path, default=DEFAULT_PHOTO_DIR,
-                        help=f"directory to watch (default: {DEFAULT_PHOTO_DIR})")
-    parser.add_argument("--fast", action="store_true",
-                        help="decode at a lower scale: quicker, slightly softer")
+    parser.add_argument("--dir", type=Path,
+                        help="directory to watch (default: gallery.photo_dir "
+                             "in config.yaml)")
     parser.add_argument("--windowed", action="store_true",
                         help="run in a window instead of fullscreen (for testing)")
-    parser.add_argument("--qr", type=Path, default=DEFAULT_QR_PATH, metavar="PNG",
-                        help=f"Wi-Fi join QR to overlay, rewritten by the "
-                             f"gallery's password rotator "
-                             f"(default: {DEFAULT_QR_PATH})")
     parser.add_argument("--no-qr", action="store_true",
-                        help="do not overlay the join QR")
-    parser.add_argument("--qr-height", type=int, default=DEFAULT_QR_HEIGHT,
-                        metavar="PX",
-                        help=f"QR size in pixels (default: {DEFAULT_QR_HEIGHT})")
-    parser.add_argument("--qr-gap", type=int, default=DEFAULT_QR_GAP,
-                        metavar="PX",
-                        help=f"vertical gap between the QR plates "
-                             f"(default: {DEFAULT_QR_GAP})")
-    parser.add_argument("--qr-caption-size", type=int,
-                        default=DEFAULT_QR_CAPTION_SIZE, metavar="PX",
-                        help=f"caption text size for both QRs "
-                             f"(default: {DEFAULT_QR_CAPTION_SIZE})")
-    parser.add_argument("--qr-caption", default=DEFAULT_QR_CAPTION,
-                        help="text under the QR (empty string for none)")
-    parser.add_argument("--camera-hint", default=DEFAULT_CAMERA_HINT,
-                        metavar="TEXT",
-                        help=f"line under the countdown, pointing at the lens "
-                             f"below the screen; empty string for none "
-                             f"(default: {DEFAULT_CAMERA_HINT!r})")
-    parser.add_argument("--camera-hint-size", type=int,
-                        default=DEFAULT_CAMERA_HINT_SIZE, metavar="PX",
-                        help=f"size of that line "
-                             f"(default: {DEFAULT_CAMERA_HINT_SIZE})")
-    parser.add_argument("--portal-qr", type=Path,
-                        default=DEFAULT_PORTAL_QR_PATH, metavar="PNG",
-                        help=f"portal-URL QR, written at AP bring-up; opens "
-                             f"the gallery directly "
-                             f"(default: {DEFAULT_PORTAL_QR_PATH})")
-    parser.add_argument("--no-portal-qr", action="store_true",
-                        help="do not overlay the portal QR")
-    parser.add_argument("--portal-qr-caption", default=DEFAULT_PORTAL_QR_CAPTION,
-                        help="text under the portal QR (empty string for none)")
+                        help="show neither QR code (booth.py passes this when "
+                             "the guest Wi-Fi is off)")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    config = pbcommon.load_config()
+    settings = config["screen"]
+    photo_dir = args.dir or Path(config["gallery"]["photo_dir"])
+    hint = settings.get("camera_hint") or ""
+    hint_size = int(settings["camera_hint_size"])
+    fast = bool(settings.get("fast_decode", False))
+    waiting = settings.get("waiting_message") or ""
 
     pygame.init()
     pygame.display.set_caption("Photobooth")
@@ -628,7 +568,7 @@ def main() -> int:
         print(f"SDL fell back to the '{driver}' driver, so nothing would appear "
               "on screen.\nRun this from the desktop session, or point it at "
               "one:\n"
-              "  export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0",
+              "  export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0",
               file=sys.stderr)
         pygame.quit()
         return 1
@@ -638,28 +578,29 @@ def main() -> int:
     screen_size = screen.get_size()
     clock = pygame.time.Clock()
     commands = CommandReader(sys.stdin)
-    # Both codes at args.qr_height: they are two steps of one instruction, so
-    # they are sized and framed alike even on separate plates.
+    # Both codes at one size: they are two steps of one instruction, so they
+    # are sized and framed alike even on separate plates. The join QR is
+    # rewritten on every passphrase rotation, the gallery QR once when the
+    # Wi-Fi comes up; a missing file is skipped until it appears.
     entries = []
     if not args.no_qr:
-        entries.append((args.qr, args.qr_caption))
-        if not args.qr.exists():
-            print(f"QR not found at {args.qr} -- the overlay will appear as "
-                  f"soon as the rotator writes it", file=sys.stderr)
-    if not args.no_portal_qr:
-        entries.append((args.portal_qr, args.portal_qr_caption))
-        if not args.portal_qr.exists():
-            print(f"Portal QR not found at {args.portal_qr} -- it is written "
-                  f"when the AP starts (main.py, not display.py alone)",
-                  file=sys.stderr)
-    badge = (BadgePanel(entries, args.qr_height, args.qr_gap,
-                        args.qr_caption_size) if entries else None)
+        files = config["password"]
+        entries = [(Path(files["qr_path"]), settings.get("join_qr_caption") or ""),
+                   (Path(files["portal_qr_path"]),
+                    settings.get("gallery_qr_caption") or "")]
+        for path, _ in entries:
+            if not path.exists():
+                print(f"QR not found at {path} -- it appears once the guest "
+                      f"Wi-Fi writes it", file=sys.stderr)
+    badge = (BadgePanel(entries, int(settings["qr_height"]),
+                        int(settings["qr_gap"]),
+                        int(settings["qr_caption_size"])) if entries else None)
     shown: Path | None = None
     surface: pygame.Surface | None = None
     overlay: tuple[str, str] | None = None
     next_poll = 0.0
 
-    draw(screen, None, "Warte auf das erste Foto...", badge)
+    draw(screen, None, waiting, badge)
 
     running = True
     while running and not _stop_requested:
@@ -683,7 +624,7 @@ def main() -> int:
                 overlay = ("warning", rest.strip())
             elif verb == "CLEAR":
                 overlay = None
-                draw(screen, surface, "Warte auf das erste Foto..."
+                draw(screen, surface, waiting
                      if surface is None else None, badge)
             elif verb == "QUIT":
                 # Commanded shutdown. Deterministic, unlike SIGTERM: SDL
@@ -696,16 +637,16 @@ def main() -> int:
                 continue
             if overlay is not None:
                 draw_overlay(screen, *overlay, badge=badge,
-                             hint=args.camera_hint,
-                             hint_size=args.camera_hint_size)
+                             hint=hint,
+                             hint_size=hint_size)
 
         now = time.monotonic()
         if now >= next_poll:
             next_poll = now + POLL_INTERVAL_S
-            latest = newest_image(args.dir)
+            latest = newest_image(photo_dir)
             if latest is not None and latest != shown and is_complete(latest):
                 try:
-                    surface = load_scaled(latest, screen_size, args.fast)
+                    surface = load_scaled(latest, screen_size, fast)
                 except Exception as err:
                     # Half-written or corrupt: keep the current photo up and
                     # retry on the next poll rather than blanking the screen.
@@ -722,11 +663,11 @@ def main() -> int:
             elif badge is not None and badge.changed():
                 if overlay is not None:
                     draw_overlay(screen, *overlay, badge=badge,
-                                 hint=args.camera_hint,
-                                 hint_size=args.camera_hint_size)
+                                 hint=hint,
+                                 hint_size=hint_size)
                 else:
                     draw(screen, surface, badge=badge,
-                         message=None if surface else "Warte auf das erste Foto...")
+                         message=None if surface else waiting)
                 print("QR updated (passphrase rotated)", file=sys.stderr)
 
         clock.tick(30)

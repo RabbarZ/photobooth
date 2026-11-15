@@ -1,12 +1,14 @@
+# Rendered by render_configs.py from deploy/systemd/ -- edit that, not this.
+# The repo paths below are filled in with the location of the checkout.
 [Unit]
-Description=Photobooth ingest (thumbnails + prebuilt zip)
+Description=Photobooth ingest (gallery thumbnails)
 After=local-fs.target
 
 [Service]
 Type=exec
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/repos/photobooth/gallery
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@GALLERY_DIR@
 ExecStart=/usr/bin/python3 ingest.py
 Restart=always
 RestartSec=5

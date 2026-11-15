@@ -1,25 +1,27 @@
 """The photo gallery, served over the booth's own Wi-Fi.
 
-An ordinary web app on a network with no internet. There is no captive portal:
-guests scan one QR to join the Wi-Fi and a second to open this page. Nothing
-here hijacks DNS, answers OS connectivity probes, or claims the device must
-log in -- a phone on this network simply has no internet, and says so.
+A web app on a network with no internet. Guests scan one QR to join the Wi-Fi
+and a second to open this page; Android phones are sent here by themselves
+through a captive portal (see /captive-api below and docs/guest-wifi.md).
+iPhones are deliberately not.
 
-nginx serves photos, thumbnails and the prebuilt zip directly; this app only
-renders the listing.
-
-It keeps no state at all. It used to track per-device session activity to feed
-the hard and soft limits, which have been removed -- a guest's time is bounded
-by the passphrase ring instead, see config.yaml.
+nginx serves photos and thumbnails directly, and answers the
+OS connectivity probes itself; this app only renders the listing and the
+captive-portal status. It keeps no state.
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, render_template, request
 
-import pbcommon
+# pbcommon is shared with wifi/ and deploy/ and lives at the repo root. Done
+# here rather than through PYTHONPATH so gunicorn needs no extra environment.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pbcommon  # noqa: E402
 
 CONFIG = pbcommon.load_config()
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
@@ -57,20 +59,8 @@ def list_photos() -> list[dict]:
     return [{"name": p.name} for p in entries[:limit]]
 
 
-def zip_info() -> dict | None:
-    """Size of the prebuilt zip, or None if ingest has not made one yet."""
-    path = Path(CONFIG["gallery"]["zip_path"])
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return None
-    return {"bytes": size, "megabytes": round(size / 1_000_000, 1)} if size else None
-
-
 @app.route("/")
 def gallery():
-    # No zip_file: the page offers per-photo saving only. The zip itself still
-    # exists -- see /api/download-all.
     return render_template("gallery.html", photos=list_photos())
 
 
@@ -100,24 +90,6 @@ def captive_api():
     return body
 
 
-@app.post("/api/download-all")
-def download_all():
-    """Hand back the static zip URL.
-
-    No longer reachable from the gallery: the "Download all" button was taken
-    out, so guests save photos individually. Kept because the zip is still
-    built by ingest.py and still served by nginx at /all-photos.zip, and
-    anyone fetching that URL directly -- the operator collecting the evening's
-    photos, most likely -- may want to discover it programmatically.
-
-    This used to register a server-side grace window so a long transfer was not
-    cut short by the idle kick. There is no idle kick any more, so there is
-    nothing to suppress. Note that a rotation still deauthenticates everyone
-    briefly, which a download has always had to survive.
-    """
-    return jsonify({"ok": True, "url": "/all-photos.zip"})
-
-
 @app.get("/api/status")
 def status():
     """Small diagnostic view -- handy when tuning, not used by the page."""
@@ -125,7 +97,6 @@ def status():
         "ip": client_ip(),
         "mac": client_mac(),
         "photos": len(list_photos()),
-        "zip": zip_info(),
         "associated_stations": len(pbcommon.associated_stations(CONFIG)),
     })
 
@@ -134,12 +105,8 @@ def status():
 # responses
 # --------------------------------------------------------------------------
 #
-# There are deliberately no OS-probe routes here. The old build answered
-# /generate_204, /hotspot-detect.html, /connecttest.txt and friends with a 302
-# so no device could ever conclude it had internet, which is what kept the
-# sign-in sheet re-appearing. With no captive portal those probes are none of
-# our business: they no longer resolve to us, and a phone is free to decide
-# this network has no internet, because it does not.
+# No OS-probe routes here (/generate_204, /hotspot-detect.html, ...): nginx
+# answers those itself, per platform, without waking gunicorn.
 
 
 @app.errorhandler(404)
@@ -152,8 +119,8 @@ def not_found(_err):
 def no_store(response):
     """Keep the listing uncached.
 
-    Not a captive-portal measure any more: photos appear while guests are
-    looking at the page, and a cached listing hides the shot just taken.
+    Photos appear while guests are looking at the page, and a cached listing
+    hides the shot just taken.
     """
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     response.headers["Pragma"] = "no-cache"

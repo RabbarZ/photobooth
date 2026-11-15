@@ -7,7 +7,8 @@
 # after starting. Handing the interface over is mandatory, not tidiness.
 #
 # Removing this file (and reloading NM) gives wlan0 back to NetworkManager,
-# which is exactly what deactivate.sh does to restore normal Wi-Fi.
+# which is exactly what `accesspoint.py stop --release` does to restore normal
+# Wi-Fi.
 
 [keyfile]
 unmanaged-devices=interface-name:@INTERFACE@

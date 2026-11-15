@@ -1,0 +1,26 @@
+# Rendered by render_configs.py from deploy/systemd/ -- edit that, not this.
+# The repo paths below are filled in with the location of the checkout.
+[Unit]
+Description=Photobooth AP interface address (wlan0)
+# For running the AP's interface address under systemd without the booth;
+# normally main.py does this itself through accesspoint.py. hostapd needs the
+# interface free of NetworkManager, and dnsmasq cannot bind its DHCP/DNS
+# sockets until the address exists, so start this before either of them.
+#
+# hostapd and dnsmasq are deliberately NOT bound to this unit (BindsTo): main.py
+# brings the interface up without it, and photobooth-booth Conflicts= with it,
+# so a binding would stop the booth whenever the radio started. Use
+# `accesspoint.py start`, which does all three in the right order.
+Wants=network.target
+After=network.target NetworkManager.service
+Before=hostapd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Idempotent: safe to start when it is already applied.
+ExecStart=/usr/bin/python3 @WIFI_DIR@/accesspoint.py up
+ExecStop=/usr/bin/python3 @WIFI_DIR@/accesspoint.py down
+
+[Install]
+WantedBy=multi-user.target

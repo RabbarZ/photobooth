@@ -1,12 +1,10 @@
 """Bring the photobooth access point up and down.
 
-Replaces the old activate.sh / deactivate.sh / ap-interface.sh trio. One
-implementation, used by both callers:
+One implementation, used by both callers:
 
-  * photobooth-ap.service runs `accesspoint.py up` / `down` at boot, so a
-    reboot restores the AP instead of leaving hostapd broadcasting an SSID
-    with no DHCP behind it.
   * main.py calls start()/stop() around the booth loop.
+  * photobooth-ap.service runs `accesspoint.py up` / `down`, for the
+    interface address under systemd without the booth.
 
 Only the configured AP interface is ever touched. NetworkManager is never
 reloaded or restarted -- on this box the management link and any SSH session
@@ -22,7 +20,10 @@ import sys
 import time
 from pathlib import Path
 
-import pbcommon
+# pbcommon is shared with gallery/ and deploy/ and lives at the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pbcommon  # noqa: E402
 
 log = logging.getLogger("accesspoint")
 

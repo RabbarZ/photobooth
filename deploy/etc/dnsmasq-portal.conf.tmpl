@@ -14,16 +14,11 @@ no-hosts
 domain-needed
 bogus-priv
 
-# There is no captive portal. Guests reach the gallery by scanning the second
-# QR on the booth screen, which encodes the address directly, so nothing here
-# hijacks DNS and no name is answered that does not belong to us.
+# Android gets a captive portal, iPhones do not (see below). Only the names
+# listed in this file resolve; everything else fails.
 #
-# Deliberately NOT present, and not to be re-added without reinstating the
-# whole portal:
-#   address=/#/         -- resolved every name to the Pi, which is what made an
-#                          arbitrary URL land on the portal.
-#   dhcp-option-force=114 -- the RFC 8910 captive-portal URI, which is what told
-#                          iOS/Android to open a sign-in sheet at all.
+# Never add `address=/#/` (every name to the Pi): iPhones would then find the
+# portal too and open a sign-in sheet.
 #
 # A friendly name for anyone who would rather type than scan.
 address=/photobooth/@ADDRESS@
@@ -45,10 +40,6 @@ address=/photobooth.local/@ADDRESS@
 #       guests reach the gallery by scanning the second QR.
 #   Android                             -> a redirect, so it declares a captive
 #       portal and offers "Sign in to network", opening the gallery for them.
-#
-# This is NOT the wildcard that used to be here: only these names are hijacked,
-# so a lookup for anything else still fails honestly instead of landing on the
-# gallery.
 # ---------------------------------------------------------------------------
 
 # Apple: captive.apple.com/hotspot-detect.html
@@ -65,19 +56,19 @@ address=/www.apple.com/@ADDRESS@
 # These are answered the OPPOSITE way from the others -- nginx redirects them
 # instead of returning 204, so Android declares a captive portal and offers
 # "Sign in to network", which opens the gallery. See the nginx template.
-#
-# www.google.com is deliberately absent: Android's HTTPS probe against it must
-# FAIL for the verdict to come out as "captive portal" rather than "no
-# internet". Adding it here would break the very behaviour this enables.
 address=/connectivitycheck.gstatic.com/@ADDRESS@
 address=/connectivitycheck.android.com/@ADDRESS@
 address=/clients3.google.com/@ADDRESS@
 address=/www.gstatic.com/@ADDRESS@
 address=/android.clients.google.com/@ADDRESS@
-# Android's *fallback* probes, tried when the first one is inconclusive.
-# www.google.com is safe to point here despite the note above: the HTTPS probe
-# still fails, because nothing listens on 443 -- the TCP connection is refused
-# outright, which is a faster and cleaner failure than a REFUSED DNS reply.
+# Android's fallback probes (http://www.google.com/gen_204 and
+# play.googleapis.com), tried when the first answer is inconclusive. They get
+# the same redirect.
+#
+# Android also probes https://www.google.com/generate_204, and that one must
+# not succeed, or Android decides it has internet and shows no portal. It
+# cannot succeed: nothing listens on port 443 here, and the Pi could not show a
+# certificate for google.com even if something did.
 address=/www.google.com/@ADDRESS@
 address=/play.googleapis.com/@ADDRESS@
 
@@ -111,10 +102,10 @@ dhcp-option=option:dns-server,@ADDRESS@
 # ---------------------------------------------------------------------------
 # RFC 8910 captive-portal URI -- for Android devices ONLY.
 #
-# On Android 11+ this is the primary signal; the HTTP probe is a fallback, and
-# relying on the probe alone is why the portal did not appear reliably. But
-# option 114 is normally broadcast to every client, and iOS acts on it too --
-# which would put the sign-in sheet back on iPhones, the exact thing we removed.
+# On Android 11+ this is the primary signal and the HTTP probe a fallback;
+# with the probe alone the portal did not appear reliably. iOS acts on option
+# 114 too, so it must never go to every client -- iPhones would get a sign-in
+# sheet.
 #
 # dnsmasq can target it. Android sets DHCP option 60 (vendor class) to
 # "android-dhcp-<version>"; iOS and macOS send no such string. Matching that
@@ -128,7 +119,7 @@ dhcp-option-force=tag:android,114,"http://@ADDRESS@/captive-api"
 
 dhcp-authoritative
 
-# Short leases keep the table small as guests come and go all evening.
-# Query logging is off on purpose: it is a constant stream of SD-card writes
-# for data nobody reads. Add log-queries temporarily if debugging DNS.
-quiet-dhcp
+# DHCP is logged (a few lines per guest, in `journalctl -u dnsmasq`), so you
+# can see who got an address and when. DNS query logging stays off: it is a
+# constant stream of SD-card writes for data nobody reads. Add log-queries
+# temporarily if debugging DNS.

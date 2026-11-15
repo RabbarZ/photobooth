@@ -20,26 +20,21 @@ limit_req_status 429;
 log_format probes '$time_iso8601 $remote_addr $host$request_uri -> $status '
                   '"$http_user_agent"';
 
-# The old blanket captive portal is gone: there is no longer a default_server
-# that 302s every hostname. What remains is deliberate and split by platform --
-# this block reassures everyone except Android, the next one gives Android a
-# portal, and the gallery is the default_server so an unexpected Host still
-# lands on the photos.
+# Three server blocks, split by platform: the first tells everyone except
+# Android the network is fine, the second gives Android a captive portal, and
+# the gallery is the default_server so an unexpected Host still lands on the
+# photos.
 
 # ---------------------------------------------------------------------------
 # Connectivity checks: tell iOS, Windows, Firefox and Ubuntu the network is fine.
 #
-# This is the exact inverse of the captive portal that used to live here. That
-# build answered these probes with a 302 so no device could conclude it had
-# internet, which is what made the sign-in sheet appear. This one answers with
-# the success response each OS is waiting for, so no device concludes it has a
-# *problem* -- specifically so iOS stops asking "Stay connected or use mobile
-# data?" over the top of the booth.
+# Each OS gets the success response it is waiting for, so none of them shows a
+# sign-in sheet or a warning -- specifically so iOS does not ask "Stay
+# connected or use mobile data?" over the top of the booth.
 #
 # The bodies below are exact and are not stylistic choices. Apple checks for
-# this precise document; Windows compares the body byte for byte; Android wants
-# a 204 with genuinely empty content. Anything else and the OS decides the
-# network is captive or broken and starts nagging again.
+# this precise document; Windows compares the body byte for byte. Anything else
+# and the OS decides the network is captive or broken and starts nagging.
 #
 # Served straight from nginx, never proxied: phones re-probe every few tens of
 # seconds, and with a room full of guests that is a steady trickle that has no
@@ -104,19 +99,17 @@ server {
 # iOS would suppress Android's portal, and the redirect that gives Android a
 # portal would make iOS nag. Two hostname families, two opposite answers.
 #
-# Android also runs an HTTPS probe against www.google.com to tell a portal from
-# a broken network, and that probe must FAIL. It does: www.google.com resolves
-# here, but nothing listens on 443, so the connection is refused outright --
-# a faster, cleaner failure than the REFUSED DNS reply it used to get. Failing
-# HTTPS plus this redirecting HTTP probe is exactly what Android reads as
-# "captive portal" rather than "no internet".
+# Android also probes https://www.google.com/generate_204, and that must not
+# succeed or it decides it has internet. It cannot: nothing here listens on
+# 443, and the Pi has no certificate for google.com anyway. Do not add an HTTPS
+# server to this file.
 #
 # The hostname list includes Android's fallback probes (www.google.com,
 # play.googleapis.com), which it tries when the first result is inconclusive.
 #
-# DHCP option 114 is also sent now, but ONLY to Android, matched on its vendor
-# class -- see the dnsmasq template. Do not turn that into an untagged option:
-# iOS would act on it too and the sign-in sheet would be back on iPhones.
+# DHCP option 114 is sent to Android only, matched on its vendor class -- see
+# the dnsmasq template. Never send it untagged: iOS acts on it too, and iPhones
+# would get a sign-in sheet.
 server {
     listen 80;
     server_name connectivitycheck.gstatic.com connectivitycheck.android.com
@@ -136,8 +129,8 @@ server {
     root /var/lib/photobooth;
     access_log off;
 
-    # sendfile keeps large JPEGs and the zip out of user space entirely;
-    # tcp_nopush lets the kernel fill full frames before sending.
+    # sendfile keeps large JPEGs out of user space entirely; tcp_nopush lets
+    # the kernel fill full frames before sending.
     sendfile on;
     tcp_nopush on;
     sendfile_max_chunk 512k;   # one big file cannot starve the other workers
@@ -146,8 +139,12 @@ server {
     default_type application/octet-stream;
 
     # ---- static photo files -------------------------------------------------
+    # The only place downloads are visible: the gallery app never sees them.
+    # One line per photo a guest saves, in nginx's standard "combined" format,
+    # which main.py --watch-clients follows.
     location /photos/ {
         alias @PHOTO_DIR@/;
+        access_log /var/log/nginx/photobooth-downloads.log combined;
         limit_conn perdev @PER_DEVICE@;
         limit_conn globaldl @GLOBAL@;
         expires 1h;
@@ -162,19 +159,8 @@ server {
         add_header Cache-Control "public, max-age=604800, immutable";
     }
 
-    # ---- the prebuilt full-gallery zip -------------------------------------
-    # A static file built in the background by ingest.py: no CPU, no RAM and no
-    # repeated work when several guests download at once.
-    location = /all-photos.zip {
-        alias @ZIP_PATH@;
-        limit_conn perdev @PER_DEVICE@;
-        limit_conn globaldl @GLOBAL@;
-        add_header Content-Disposition 'attachment; filename="photobooth.zip"';
-        add_header Cache-Control "no-store";
-    }
-
     location /static/ {
-        alias @APP_DIR@/static/;
+        alias @GALLERY_DIR@/static/;
         expires 7d;
     }
 
@@ -188,6 +174,9 @@ server {
         proxy_pass http://@PORTAL_BIND@/captive-api;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        # The Flask app sets its own Cache-Control; drop it so the reply
+        # carries exactly one.
+        proxy_hide_header Cache-Control;
         add_header Cache-Control "no-store" always;
     }
 
@@ -203,8 +192,6 @@ server {
         proxy_connect_timeout 5s;
         proxy_read_timeout 30s;
         # No add_header here: the Flask app already sets Cache-Control on every
-        # response, and adding a second one produced duplicate headers on the
-        # captive-portal probe -- needless ambiguity on the one response that
-        # has to be interpreted correctly.
+        # response, and a second one would duplicate it.
     }
 }

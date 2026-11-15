@@ -14,8 +14,6 @@ import gphoto2 as gp
 
 log = logging.getLogger(__name__)
 
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "photos"
-
 # How long to keep listening for extra files after a shot. RAW+JPEG produces
 # two GP_EVENT_FILE_ADDED events, and the second one lags the first.
 EXTRA_FILE_WAIT_S = 2.0
@@ -34,7 +32,7 @@ def _explain(err: gp.GPhoto2Error) -> str:
         ),
         gp.GP_ERROR_IO_USB_CLAIM: (
             "Another process is holding the camera. Usually a gvfs volume "
-            "monitor auto-mounted it -- see README troubleshooting."
+            "monitor auto-mounted it -- see docs/booth.md, Troubleshooting."
         ),
         gp.GP_ERROR_IO: (
             "USB I/O error. Often a power or cable problem: use a powered hub "
@@ -49,7 +47,7 @@ def _explain(err: gp.GPhoto2Error) -> str:
 class Camera:
     """A connected camera. Use as a context manager, or call connect/disconnect."""
 
-    def __init__(self, output_dir: Path | str = DEFAULT_OUTPUT_DIR,
+    def __init__(self, output_dir: Path | str,
                  delete_after_download: bool = False) -> None:
         self.output_dir = Path(output_dir)
         self.delete_after_download = delete_after_download
@@ -184,14 +182,14 @@ class MockCamera:
     gallery can all be exercised with no camera attached. A "capture" copies a
     random existing photo under a fresh timestamped name, which means every
     downstream consumer -- the viewer's newest-file poll, thumbnail
-    generation, the zip rebuild -- sees exactly what a real shot produces.
+    generation, the gallery -- sees exactly what a real shot produces.
     """
 
     # Roughly what a real capture plus USB download costs on this hardware.
     # Without it the mock is unrealistically instant and hides timing bugs.
     CAPTURE_DELAY_S = 0.8
 
-    def __init__(self, output_dir: Path | str = DEFAULT_OUTPUT_DIR,
+    def __init__(self, output_dir: Path | str,
                  delete_after_download: bool = False,
                  source_dir: Path | str | None = None) -> None:
         self.output_dir = Path(output_dir)

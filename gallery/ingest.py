@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-"""Pre-generate thumbnails and the full-gallery zip whenever photos change.
+"""Pre-generate gallery thumbnails whenever photos change.
 
-Everything expensive happens here, once, in the background -- never during a
-guest's request:
-
-  * Thumbnails are built on ingest. Resizing a 24 MP JPEG takes seconds on a
-    Pi 3, so doing it per request would be hopeless with several guests.
-  * The zip is written to disk with NO COMPRESSION and served as a static file
-    by nginx. Streaming or building it per request would burn the same CPU and
-    IO repeatedly for every guest; building it in memory is impossible on 1 GB.
-
-JPEGs are already compressed, so store-only costs nothing in size and saves all
-the deflate CPU. PIL's draft() is used for thumbnails because it lets libjpeg
-downscale during decode (DCT scaling) instead of unpacking 24 MP first --
-several times faster on this hardware.
+Resizing a 24 MP JPEG is far too slow to do per request with several guests
+loading the page at once, so it happens here, once, in the background. PIL's
+draft() lets libjpeg downscale during decode (DCT scaling) instead of
+unpacking 24 MP first -- several times faster.
 """
 
 from __future__ import annotations
@@ -23,12 +14,14 @@ import os
 import signal
 import sys
 import time
-import zipfile
 from pathlib import Path
 
 from PIL import Image, ImageOps
 
-import pbcommon
+# pbcommon is shared with wifi/ and deploy/ and lives at the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import pbcommon  # noqa: E402
 
 log = logging.getLogger("ingest")
 _running = True
@@ -121,49 +114,6 @@ def sync_thumbnails(config: dict, files: list[Path]) -> int:
     return written
 
 
-def build_zip(config: dict, files: list[Path]) -> Path | None:
-    """Write the full-gallery zip to disk, atomically.
-
-    ZIP_STORED (no deflate) because JPEGs do not compress -- we would spend
-    minutes of CPU to save perhaps 1%. Files are streamed in one at a time, so
-    peak memory is a single buffer regardless of gallery size.
-    """
-    zip_path = Path(config["gallery"]["zip_path"])
-    zip_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = zip_path.with_suffix(".zip.tmp")
-
-    try:
-        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED,
-                             allowZip64=True) as archive:
-            for path in files:
-                if not _running:
-                    log.info("zip build interrupted; discarding partial file")
-                    tmp.unlink(missing_ok=True)
-                    return None
-                try:
-                    archive.write(path, arcname=path.name)
-                except OSError as err:
-                    log.warning("skipped %s in zip: %s", path.name, err)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, zip_path)  # guests downloading the old zip are unaffected
-    except OSError as err:
-        log.error("zip build failed: %s", err)
-        tmp.unlink(missing_ok=True)
-        return None
-
-    size = zip_path.stat().st_size
-    log.info("zip rebuilt: %d photo(s), %.1f MB", len(files), size / 1e6)
-    return zip_path
-
-
-def rebuild(config: dict, files: list[Path]) -> None:
-    made = sync_thumbnails(config, files)
-    if made:
-        log.info("generated %d thumbnail(s)", made)
-    if _running:
-        build_zip(config, files)
-
-
 def main() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
@@ -171,7 +121,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, _stop)
 
     # Be the first thing the scheduler drops. Capturing photos and serving
-    # guests both matter more than finishing a rebuild quickly.
+    # guests both matter more than a thumbnail appearing a second sooner.
     try:
         os.nice(10)
     except OSError:
@@ -180,27 +130,23 @@ def main() -> int:
     config = pbcommon.load_config()
     photo_dir = Path(config["gallery"]["photo_dir"])
     poll = float(config["gallery"]["ingest_poll_seconds"])
-    debounce = float(config["gallery"]["ingest_debounce_seconds"])
-    log.info("watching %s (poll %.0fs, debounce %.0fs)", photo_dir, poll, debounce)
+    log.info("watching %s (poll %.0fs)", photo_dir, poll)
 
     last_built: tuple | None = None
-    pending: tuple | None = None
-    pending_since = 0.0
 
     while _running:
         files = photo_files(photo_dir)
         current = signature(files)
 
+        # Only new or changed photos get a thumbnail, so this is cheap even
+        # with a full evening on disk. A photo caught half-written fails to
+        # decode, changes size by the next poll, and is retried then.
         if current != last_built:
-            if current != pending:
-                # Directory changed (again) -- restart the debounce window so a
-                # burst of shots produces one rebuild, not one per photo.
-                pending, pending_since = current, time.time()
-                log.debug("change detected; debouncing")
-            elif time.time() - pending_since >= debounce:
-                rebuild(config, files)
-                if _running:
-                    last_built, pending = current, None
+            made = sync_thumbnails(config, files)
+            if made:
+                log.info("generated %d thumbnail(s)", made)
+            if _running:
+                last_built = current
 
         deadline = time.time() + poll
         while _running and time.time() < deadline:
