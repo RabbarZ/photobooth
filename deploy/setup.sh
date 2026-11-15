@@ -137,6 +137,14 @@ systemd-tmpfiles --create /etc/tmpfiles.d/photobooth-usbfs.conf 2>/dev/null || t
 echo "  usbfs_memory_mb = $(cat /sys/module/usbcore/parameters/usbfs_memory_mb 2>/dev/null || echo '?')"
 
 # ---------------------------------------------------------------------------
+say "RTC battery charging"
+BOOT_CONFIG=/boot/firmware/config.txt
+if ! grep -q '^dtparam=rtc_bbat_vchg=' "$BOOT_CONFIG"; then
+    printf '\n[all]\ndtparam=rtc_bbat_vchg=4200000\n' >> "$BOOT_CONFIG"
+fi
+echo "  charging on at 4.2 V for an LIR2032 (after reboot)"
+
+# ---------------------------------------------------------------------------
 say "Desktop: autologin and no screen blanking"
 # The booth screen needs a logged-in desktop session at boot, and a screen
 # that never goes dark between guests.

@@ -184,6 +184,37 @@ Ethernet or from the console, not over the guest Wi-Fi.
 - Sony A7 III on USB, set to `PC Remote`. Other libgphoto2 cameras should work
   but are untested.
 - A normally-open push button between GPIO17 and GND.
+- Optional: an LIR2032 cell in a holder on the Pi 5's BAT connector. See
+  [Clock](#clock).
+
+## Clock
+
+The screen and the gallery put the photo with the newest file time first, so
+the clock must not jump backwards mid-event. Two things keep it right:
+
+- **Internet on `wlan1`**, the USB Wi-Fi dongle (home Wi-Fi or a phone
+  hotspot). The clock is set within seconds of the Pi getting online.
+  `wlan0` cannot help: it is the guest access point and has no internet.
+- **The RTC battery**, for a reboot or power cut at an event with no
+  reception. While the Pi has no power, the Pi 5's real-time clock keeps
+  time only on this battery.
+
+The battery is an **LIR2032**: a rechargeable Li-ion coin cell. The firmware
+ships with RTC charging off, so `setup.sh` adds this to
+`/boot/firmware/config.txt` (active after a reboot):
+
+```
+dtparam=rtc_bbat_vchg=4200000
+```
+
+4.2 V is the LIR2032's full-charge voltage. The official Raspberry Pi battery
+is a different cell (ML-2020, lithium manganese) that needs `3000000` instead.
+Never fit a non-rechargeable CR2032: the Pi would try to charge it.
+
+The cell is only charged while it is connected and the Pi is on. Unplugging it
+between events is fine: it loses very little charge in storage, and `wlan1`
+sets the clock at the next boot anyway. Check charging with
+`cat /sys/class/rtc/rtc0/charging_voltage` (`4200000` when on).
 
 ## More
 
