@@ -9,8 +9,9 @@
 #
 # Installs packages, configures the host for tethered capture, renders config
 # from config.yaml, installs systemd units and builds the first QR. Does NOT
-# touch the radio: wlan0 keeps its current Wi-Fi connection and your SSH
-# session survives. Bringing the AP up is main.py's job.
+# touch wlan0: it keeps its current Wi-Fi connection and your SSH session
+# survives. Bringing the AP up is main.py's job. If the USB Wi-Fi dongle
+# (wlan1) is plugged in, asks for the passwords of its networks.
 #
 # The booth runs for one desktop user. By default that is the user who ran
 # sudo; override with PHOTOBOOTH_USER=name.
@@ -22,6 +23,12 @@ DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$DEPLOY_DIR")"
 WIFI_DIR="$REPO_DIR/wifi"
 STATE_DIR=/var/lib/photobooth
+
+# The Pi's own Wi-Fi on the USB dongle (wlan0 is the guest AP): internet, SSH
+# and deploys. Most preferred network first.
+# Passwords are asked for when setup runs, never stored in the repo.
+UPLINK_IF=wlan1
+UPLINK_SSIDS=("Kilian" "Kilian 15 Pro")
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 warn() { printf '  \033[33mWARNING:\033[0m %s\n' "$1" >&2; }
@@ -143,6 +150,59 @@ if ! grep -q '^dtparam=rtc_bbat_vchg=' "$BOOT_CONFIG"; then
     printf '\n[all]\ndtparam=rtc_bbat_vchg=4200000\n' >> "$BOOT_CONFIG"
 fi
 echo "  charging on at 4.2 V for an LIR2032 (after reboot)"
+
+# ---------------------------------------------------------------------------
+say "Wi-Fi on $UPLINK_IF (USB dongle: internet, SSH, deploys)"
+# wlan0 becomes the guest AP, so the dongle on wlan1 is the Pi's own Wi-Fi:
+# internet, SSH, git pull and deploys. NetworkManager keeps managing it, joins the
+# highest-priority network in range and falls back to the next one. Passwords
+# are prompted for here and stored only in NetworkManager's root-only
+# system-connections, never in the repo.
+uplink_tty_ok() { { : </dev/tty; } 2>/dev/null; }
+
+if [[ ! -e /sys/class/net/$UPLINK_IF ]]; then
+    warn "no $UPLINK_IF: the USB Wi-Fi dongle is missing. Without it the Pi
+           has no Wi-Fi of its own once wlan0 is the guest AP.
+           Plug it in and run setup.sh again to set up its Wi-Fi."
+elif ! command -v nmcli >/dev/null; then
+    warn "nmcli not found: cannot set up Wi-Fi on $UPLINK_IF"
+elif ! uplink_tty_ok; then
+    warn "no terminal to ask for Wi-Fi passwords: $UPLINK_IF not set up.
+           Run setup.sh again from an interactive shell."
+else
+    for i in "${!UPLINK_SSIDS[@]}"; do
+        ssid="${UPLINK_SSIDS[$i]}"
+        prio=$(( (${#UPLINK_SSIDS[@]} - i) * 10 ))   # first SSID wins
+        name="uplink $ssid"
+        if nmcli -t -f NAME connection show | grep -Fxq "$name"; then
+            hint="Enter keeps the saved one"
+        else
+            hint="Enter skips"
+        fi
+        while :; do
+            printf '  Password for "%s" (%s): ' "$ssid" "$hint" >/dev/tty
+            IFS= read -rs pw </dev/tty || pw=""
+            printf '\n' >/dev/tty
+            [[ -z "$pw" || ( ${#pw} -ge 8 && ${#pw} -le 64 ) ]] && break
+            echo "    WPA passwords are 8 to 63 characters (or 64 hex), try again" >/dev/tty
+        done
+        if [[ -z "$pw" ]]; then
+            echo "  \"$ssid\": unchanged ($hint)"
+            continue
+        fi
+        nmcli connection delete "$name" >/dev/null 2>&1 || true
+        if nmcli connection add type wifi ifname "$UPLINK_IF" con-name "$name" \
+               ssid "$ssid" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$pw" \
+               connection.autoconnect yes \
+               connection.autoconnect-priority "$prio" >/dev/null; then
+            echo "  \"$ssid\": saved (priority $prio)"
+        else
+            warn "could not save \"$ssid\" -- see the nmcli error above"
+        fi
+    done
+    unset pw
+    echo "  $UPLINK_IF: $(nmcli -g GENERAL.STATE,GENERAL.CONNECTION device show "$UPLINK_IF" 2>/dev/null | paste -sd ' ' -)"
+fi
 
 # ---------------------------------------------------------------------------
 say "Desktop: autologin and no screen blanking"
@@ -283,7 +343,8 @@ Verify now, over your existing network:
 
 After the next REBOOT, wlan0 belongs to the booth: NetworkManager no longer
 manages it, and the booth starts at boot and turns it into the guest access
-point. Manage the Pi over Ethernet (or keyboard + monitor) from then on.
+point. Manage the Pi over $UPLINK_IF (the USB dongle), Ethernet, or keyboard +
+monitor from then on.
 
 To try it now without rebooting (from the console, not over Wi-Fi SSH):
   sudo python3 $REPO_DIR/main.py
