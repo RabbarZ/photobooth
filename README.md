@@ -127,6 +127,16 @@ sudo systemctl restart photobooth
 journalctl -fu photobooth
 ```
 
+Logs are kept across reboots (up to 300 MB), so an event can be looked at
+afterwards:
+
+```bash
+journalctl --list-boots                       # one line per power-on
+journalctl -b -1 -u photobooth                # the booth, previous power-on
+journalctl -b -1 -u 'photobooth*' --grep 'WARNING|ERROR|Traceback'
+journalctl -u photobooth --since "YYYY-MM-DD HH:MM" --until "YYYY-MM-DD HH:MM"
+```
+
 A few parts also run on their own, for testing:
 
 ```bash

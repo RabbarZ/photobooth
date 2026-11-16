@@ -144,6 +144,28 @@ systemd-tmpfiles --create /etc/tmpfiles.d/photobooth-usbfs.conf 2>/dev/null || t
 echo "  usbfs_memory_mb = $(cat /sys/module/usbcore/parameters/usbfs_memory_mb 2>/dev/null || echo '?')"
 
 # ---------------------------------------------------------------------------
+say "Keeping logs across reboots"
+# Everything the booth logs goes to the systemd journal. Raspberry Pi OS keeps
+# the journal in RAM by default (to spare the SD card), so an event's log is
+# gone once the Pi is switched off. Store it on disk instead, capped in size.
+# Logs are flushed every 30 s rather than the default 5 min, because the booth
+# is usually switched off by pulling the plug. The 99- prefix sorts after
+# Raspberry Pi OS's own drop-in, so this one wins.
+install -d -m 0755 /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/99-photobooth.conf <<'JOURNAL'
+# Installed by photobooth setup.sh: keep logs across reboots.
+[Journal]
+Storage=persistent
+SystemMaxUse=300M
+SyncIntervalSec=30s
+JOURNAL
+install -d -m 2755 -g systemd-journal /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+systemctl restart systemd-journald
+journalctl --flush 2>/dev/null || true
+echo "  journal on disk in /var/log/journal (up to 300 MB, oldest dropped first)"
+
+# ---------------------------------------------------------------------------
 say "RTC battery charging"
 BOOT_CONFIG=/boot/firmware/config.txt
 if ! grep -q '^dtparam=rtc_bbat_vchg=' "$BOOT_CONFIG"; then
