@@ -11,7 +11,7 @@
 # from config.yaml, installs systemd units and builds the first QR. Does NOT
 # touch wlan0: it keeps its current Wi-Fi connection and your SSH session
 # survives. Bringing the AP up is main.py's job. If the USB Wi-Fi dongle
-# (wlan1) is plugged in, asks for the passwords of its networks.
+# (wlan1) is plugged in, asks for Wi-Fi networks (SSID + password) for it.
 #
 # The booth runs for one desktop user. By default that is the user who ran
 # sudo; override with PHOTOBOOTH_USER=name.
@@ -25,10 +25,10 @@ WIFI_DIR="$REPO_DIR/wifi"
 STATE_DIR=/var/lib/photobooth
 
 # The Pi's own Wi-Fi on the USB dongle (wlan0 is the guest AP): internet, SSH
-# and deploys. Most preferred network first.
-# Passwords are asked for when setup runs, never stored in the repo.
+# and deploys. Networks and passwords are asked for when setup runs, never
+# stored in the repo.
 UPLINK_IF=wlan1
-UPLINK_SSIDS=("Kilian" "Kilian 15 Pro")
+UPLINK_PREFIX="uplink "   # NetworkManager profile name = prefix + SSID
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 warn() { printf '  \033[33mWARNING:\033[0m %s\n' "$1" >&2; }
@@ -176,11 +176,16 @@ echo "  charging on at 4.2 V for an LIR2032 (after reboot)"
 # ---------------------------------------------------------------------------
 say "Wi-Fi on $UPLINK_IF (USB dongle: internet, SSH, deploys)"
 # wlan0 becomes the guest AP, so the dongle on wlan1 is the Pi's own Wi-Fi:
-# internet, SSH, git pull and deploys. NetworkManager keeps managing it, joins the
-# highest-priority network in range and falls back to the next one. Passwords
-# are prompted for here and stored only in NetworkManager's root-only
-# system-connections, never in the repo.
+# internet, SSH, git pull and deploys. NetworkManager keeps managing it and joins
+# whichever saved network is in range. Networks are prompted for here, one SSID
+# and password at a time until the SSID is left empty, and stored only in
+# NetworkManager's root-only system-connections, never in the repo. Run setup.sh
+# again to add a network, or enter a saved SSID again to change its password.
 uplink_tty_ok() { { : </dev/tty; } 2>/dev/null; }
+uplink_saved() {
+    # -g escapes ':' in names as '\:'
+    nmcli -g NAME connection show | sed 's/\\:/:/g' | grep "^$UPLINK_PREFIX" || true
+}
 
 if [[ ! -e /sys/class/net/$UPLINK_IF ]]; then
     warn "no $UPLINK_IF: the USB Wi-Fi dongle is missing. Without it the Pi
@@ -192,14 +197,29 @@ elif ! uplink_tty_ok; then
     warn "no terminal to ask for Wi-Fi passwords: $UPLINK_IF not set up.
            Run setup.sh again from an interactive shell."
 else
-    for i in "${!UPLINK_SSIDS[@]}"; do
-        ssid="${UPLINK_SSIDS[$i]}"
-        prio=$(( (${#UPLINK_SSIDS[@]} - i) * 10 ))   # first SSID wins
-        name="uplink $ssid"
-        if nmcli -t -f NAME connection show | grep -Fxq "$name"; then
-            hint="Enter keeps the saved one"
+    saved=$(uplink_saved)
+    if [[ -n "$saved" ]]; then
+        echo "  saved networks:"
+        while IFS= read -r name; do
+            echo "    \"${name#"$UPLINK_PREFIX"}\""
+        done <<<"$saved"
+    else
+        echo "  no networks saved yet"
+    fi
+    echo "  Add a network, or enter a saved one to change its password."
+    while :; do
+        printf '  SSID (Enter when done): ' >/dev/tty
+        IFS= read -r ssid </dev/tty || ssid=""
+        [[ -n "$ssid" ]] || break
+        if (( $(printf '%s' "$ssid" | wc -c) > 32 )); then
+            echo "    SSIDs are at most 32 bytes, try again" >/dev/tty
+            continue
+        fi
+        name="$UPLINK_PREFIX$ssid"
+        if grep -Fxq -- "$name" <<<"$(uplink_saved)"; then
+            exists=1; hint="Enter keeps the saved one"
         else
-            hint="Enter skips"
+            exists=0; hint="Enter skips"
         fi
         while :; do
             printf '  Password for "%s" (%s): ' "$ssid" "$hint" >/dev/tty
@@ -209,15 +229,20 @@ else
             echo "    WPA passwords are 8 to 63 characters (or 64 hex), try again" >/dev/tty
         done
         if [[ -z "$pw" ]]; then
-            echo "  \"$ssid\": unchanged ($hint)"
+            (( exists )) && echo "  \"$ssid\": unchanged" || echo "  \"$ssid\": skipped"
             continue
         fi
-        nmcli connection delete "$name" >/dev/null 2>&1 || true
-        if nmcli connection add type wifi ifname "$UPLINK_IF" con-name "$name" \
-               ssid "$ssid" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$pw" \
-               connection.autoconnect yes \
-               connection.autoconnect-priority "$prio" >/dev/null; then
-            echo "  \"$ssid\": saved (priority $prio)"
+        if (( exists )); then
+            if nmcli connection modify "$name" \
+                   wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$pw" >/dev/null; then
+                echo "  \"$ssid\": password updated"
+            else
+                warn "could not update \"$ssid\" -- see the nmcli error above"
+            fi
+        elif nmcli connection add type wifi ifname "$UPLINK_IF" con-name "$name" \
+                 ssid "$ssid" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$pw" \
+                 connection.autoconnect yes >/dev/null; then
+            echo "  \"$ssid\": saved"
         else
             warn "could not save \"$ssid\" -- see the nmcli error above"
         fi
